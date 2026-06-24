@@ -220,4 +220,3 @@ topology-discovery/
 - **Pattern Adapter** e folosit explicit pentru suportul multi-vendor (`VendorAdapter` + `JuniperAdapter`/`AristaAdapter` + `VendorAdapterFactory`) — adăugarea unui vendor nou (ex: Cisco IOS-XR) necesită doar o clasă nouă, fără să atingi restul codului. Bun exemplu de design pattern aplicat practic.
 - **Limitare cunoscută documentată**: LLDP-MIB standard (`lldpRemSysName` etc.) nu garantează IP-ul de management al vecinului direct în tabelele de bază folosite — aplicația leagă vecinii cunoscuți după hostname; o extensie ar interoga și `lldpRemManAddrTable` pentru rezolvare IP completă.
 - **Criptarea credențialelor** (Jasypt, AES-256) e un punct bun de discutat la securitate — parolele SSH/community SNMP nu sunt niciodată stocate sau expuse în clar către frontend.
-"# topology-discover" 

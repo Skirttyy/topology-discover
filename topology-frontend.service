@@ -1,0 +1,19 @@
+[Unit]
+Description=Topology Discovery - Frontend (nginx)
+After=network.target topology-backend.service
+
+[Service]
+Type=forking
+# nginx se instaleaza cu apt si se configureaza separat (vezi setup.sh)
+# acest serviciu e de fapt nginx standard - il activam direct pe el
+ExecStartPre=/usr/sbin/nginx -t
+ExecStart=/usr/sbin/nginx
+ExecReload=/bin/kill -s HUP $MAINPID
+ExecStop=/bin/kill -s QUIT $MAINPID
+PIDFile=/run/nginx.pid
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,85 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+  /* ---- Color tokens ---- */
+  --bg-app: #0B0E14;
+  --bg-panel: #131720;
+  --bg-panel-raised: #1A1F2B;
+  --border-subtle: #252A35;
+  --border-strong: #353C4A;
+
+  --text-primary: #E4E7EB;
+  --text-secondary: #8B93A3;
+  --text-tertiary: #5A6275;
+
+  --accent-active: #3DDC84;
+  --accent-active-dim: #1F6E42;
+  --accent-warning: #F2A93B;
+  --accent-error: #F2545B;
+  --accent-info: #4D9DF2;
+  --accent-neutral: #5A6275;
+
+  --vendor-juniper: #7C8CF8;
+  --vendor-arista: #F28C4D;
+
+  /* ---- Type tokens ---- */
+  --font-mono: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+  --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+
+  /* ---- Spacing ---- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font-family: var(--font-ui);
+}
+
+::selection {
+  background: var(--accent-active-dim);
+  color: var(--text-primary);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 4px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent-info);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

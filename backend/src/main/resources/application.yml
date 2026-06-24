@@ -1,0 +1,44 @@
+spring:
+  application:
+    name: topology-discovery
+
+  # Profil activ implicit: 'local' (H2). Pentru Proxmox/productie, foloseste 'docker' (Postgres)
+  profiles:
+    active: local
+
+  jackson:
+    serialization:
+      indent_output: true
+
+server:
+  port: 8080
+
+# Configurare Jasypt - cheia de criptare vine din variabila de mediu JASYPT_ENCRYPTOR_PASSWORD
+# NICIODATA nu se hardcodeaza in fisier. Vezi README pentru cum se seteaza.
+jasypt:
+  encryptor:
+    password: ${JASYPT_ENCRYPTOR_PASSWORD:CHANGE_ME_IN_ENV}
+    algorithm: PBEWITHHMACSHA512ANDAES_256
+    iv-generator-classname: org.jasypt.iv.RandomIvGenerator
+
+# Configurari proprii ale aplicatiei de discovery
+discovery:
+  ssh:
+    connect-timeout-ms: 8000
+    command-timeout-ms: 15000
+  snmp:
+    community: public
+    timeout-ms: 3000
+    retries: 1
+  subnet-scan:
+    # cate IP-uri se verifica in paralel cand scanam un subnet
+    parallel-threads: 20
+    port-check: 22
+    port-timeout-ms: 1000
+  bfs:
+    max-depth: 10
+    max-devices: 200
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html

@@ -1,0 +1,25 @@
+[Unit]
+Description=Topology Discovery - Backend (Spring Boot)
+After=network.target
+
+[Service]
+Type=simple
+User=topology
+WorkingDirectory=/opt/topology-discovery/backend
+
+# Cheia de criptare Jasypt - schimb-o cu valoarea ta reala
+# Genereaza una cu: openssl rand -base64 32
+Environment="JASYPT_ENCRYPTOR_PASSWORD=schimba-aceasta-cheie"
+Environment="SPRING_PROFILES_ACTIVE=local"
+
+# Ruleaza JAR-ul precompilat (vezi setup.sh cum se face build-ul)
+ExecStart=/usr/bin/java -jar /opt/topology-discovery/backend/target/discovery-1.0.0.jar
+
+Restart=on-failure
+RestartSec=10
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
