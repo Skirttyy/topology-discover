@@ -1,14 +1,16 @@
 import React, { memo } from 'react';
 import { Handle, Position } from 'reactflow';
 
-const STATUS_CONFIG = {
-  ACTIVE:      { color: '#3DDC84', pulse: true },
+// ── Status ─────────────────────────────────────────────────────────────────
+const STATUS = {
+  ACTIVE:      { color: '#3DDC84', pulse: true  },
+  POLLING:     { color: '#4D9DF2', pulse: true  },
   DISCOVERED:  { color: '#5A6275', pulse: false },
-  POLLING:     { color: '#4D9DF2', pulse: true },
   UNREACHABLE: { color: '#F2A93B', pulse: false },
   ERROR:       { color: '#F2545B', pulse: false },
 };
 
+// ── Vendor ─────────────────────────────────────────────────────────────────
 const VENDOR_COLOR = {
   JUNIPER:  '#7C8CF8',
   ARISTA:   '#F28C4D',
@@ -16,119 +18,270 @@ const VENDOR_COLOR = {
   UNKNOWN:  '#5A6275',
 };
 
-const VENDOR_ICON = {
-  JUNIPER:  'J',
-  ARISTA:   'A',
-  MIKROTIK: 'M',
-  UNKNOWN:  '?',
-};
+// ── Device type detection ───────────────────────────────────────────────────
+function detectType(data) {
+  const model   = (data.model   || '').toLowerCase();
+  const label   = (data.label   || '').toLowerCase();
+  const ip      = (data.managementIp || '').toLowerCase();
+  const vendor  = data.vendor   || 'UNKNOWN';
 
+  if (ip.startsWith('lldp:')) return 'PLACEHOLDER';
+
+  if (label.includes('wan') || label.includes('tunnel') || label.includes('internet')
+      || label.includes('fw') || label.includes('firewall') || label.includes('gw'))
+    return 'WAN';
+
+  if (model.includes('vmx') || model.includes('-mx') || model.includes('ptx')
+      || label.includes('core') || label.includes('border') || label.includes('pe-')
+      || (vendor === 'MIKROTIK'))
+    return 'ROUTER';
+
+  if (model.includes('qfx') || model.includes('vqfx') || model.includes('ex')
+      || model.includes('arista') || model.includes('7050') || model.includes('7280')
+      || label.includes('spine') || label.includes('leaf') || label.includes('sw'))
+    return 'SWITCH';
+
+  return 'UNKNOWN';
+}
+
+// ── SVG Icons ──────────────────────────────────────────────────────────────
+const IconRouter = ({ color }) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+    <circle cx="12" cy="12" r="10" stroke={color} strokeWidth="1.5"/>
+    <path d="M12 6v12M6 12h12" stroke={color} strokeWidth="1.5" strokeLinecap="round"/>
+    <path d="M9 9l6 6M15 9l-6 6" stroke={color} strokeWidth="1.5" strokeLinecap="round"/>
+  </svg>
+);
+
+const IconSwitch = ({ color }) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+    <rect x="2" y="5" width="20" height="4" rx="2" stroke={color} strokeWidth="1.5"/>
+    <rect x="2" y="11" width="20" height="4" rx="2" stroke={color} strokeWidth="1.5"/>
+    <rect x="2" y="17" width="20" height="4" rx="2" stroke={color} strokeWidth="1.5"/>
+    <circle cx="18" cy="7"  r="1" fill={color}/>
+    <circle cx="18" cy="13" r="1" fill={color}/>
+    <circle cx="18" cy="19" r="1" fill={color}/>
+  </svg>
+);
+
+const IconWan = ({ color }) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+    <path d="M3 12a9 9 0 1 0 18 0 9 9 0 0 0-18 0Z" stroke={color} strokeWidth="1.5"/>
+    <path d="M3 12h18M12 3c-2.5 3-4 5.5-4 9s1.5 6 4 9M12 3c2.5 3 4 5.5 4 9s-1.5 6-4 9"
+          stroke={color} strokeWidth="1.5"/>
+  </svg>
+);
+
+const IconUnknown = ({ color }) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+    <circle cx="12" cy="12" r="10" stroke={color} strokeWidth="1.5" strokeDasharray="4 2"/>
+    <text x="12" y="16" textAnchor="middle" fill={color} fontSize="12" fontWeight="700">?</text>
+  </svg>
+);
+
+// ── Handle style ───────────────────────────────────────────────────────────
+const H = { background: '#353C4A', width: 7, height: 7, border: '2px solid #1A1F2B' };
+
+// ── Main component ─────────────────────────────────────────────────────────
 function DeviceNode({ data, selected }) {
-  const status  = STATUS_CONFIG[data.status] || STATUS_CONFIG.DISCOVERED;
-  const vcolor  = VENDOR_COLOR[data.vendor] || VENDOR_COLOR.UNKNOWN;
+  const type   = detectType(data);
+  const status = STATUS[data.status] || STATUS.DISCOVERED;
+  const vcolor = VENDOR_COLOR[data.vendor] || VENDOR_COLOR.UNKNOWN;
 
+  // ── PLACEHOLDER (lldp:*) — dim, dashed ──────────────────────────────────
+  if (type === 'PLACEHOLDER') {
+    return (
+      <div style={{
+        background: 'rgba(11,14,20,0.7)',
+        border: `1.5px dashed ${selected ? '#4D9DF2' : '#353C4A'}`,
+        borderRadius: 12, minWidth: 170,
+        opacity: 0.7, cursor: 'pointer',
+        animation: 'nodeAppear 0.3s ease both',
+        fontFamily: 'var(--font-ui)',
+      }}>
+        <Handle type="target" position={Position.Top}    style={H} />
+        <Handle type="source" position={Position.Bottom} style={H} />
+        <Handle type="target" position={Position.Left}   style={H} />
+        <Handle type="source" position={Position.Right}  style={H} />
+        <div style={{ padding: '8px 12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+            <IconUnknown color="#5A6275"/>
+            <span style={{ fontSize: 9, color: '#5A6275', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              NEDESCOPERIT
+            </span>
+          </div>
+          <div style={{
+            fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 600,
+            color: '#8B93A3', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          }}>
+            {data.label}
+          </div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#5A6275' }}>
+            {data.managementIp}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── WAN / GATEWAY ─────────────────────────────────────────────────────────
+  if (type === 'WAN') {
+    return (
+      <div style={{
+        background: selected ? '#1A1520' : '#0F1018',
+        border: `1.5px solid ${selected ? '#4D9DF2' : '#F2A93B44'}`,
+        borderRadius: 20,
+        minWidth: 170,
+        boxShadow: selected
+          ? '0 0 0 3px rgba(77,157,242,0.2), 0 4px 20px rgba(0,0,0,0.5)'
+          : '0 0 16px rgba(242,169,59,0.08), 0 2px 8px rgba(0,0,0,0.3)',
+        cursor: 'pointer', fontFamily: 'var(--font-ui)',
+        animation: 'nodeAppear 0.35s cubic-bezier(0.34,1.56,0.64,1) both',
+      }}>
+        <Handle type="target" position={Position.Top}    style={H} />
+        <Handle type="source" position={Position.Bottom} style={H} />
+        <Handle type="target" position={Position.Left}   style={H} />
+        <Handle type="source" position={Position.Right}  style={H} />
+        <div style={{ padding: '10px 14px 11px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 6 }}>
+            <IconWan color="#F2A93B"/>
+            <div style={{
+              width: 6, height: 6, borderRadius: '50%', background: status.color, flexShrink: 0,
+              animation: status.pulse ? 'topo-pulse 1.8s ease-in-out infinite' : 'none',
+            }}/>
+            <span style={{ fontSize: 9, color: '#F2A93B', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              {data.vendor !== 'UNKNOWN' ? data.vendor : 'WAN'}
+            </span>
+          </div>
+          <div style={{
+            fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 700,
+            color: '#E4E7EB', marginBottom: 2,
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          }}>
+            {data.label}
+          </div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: '#8B93A3' }}>
+            {data.managementIp}
+          </div>
+        </div>
+        <PulseStyle color={status.color}/>
+      </div>
+    );
+  }
+
+  // ── ROUTER ────────────────────────────────────────────────────────────────
+  if (type === 'ROUTER') {
+    return (
+      <div style={{
+        background: selected ? '#1A1E2D' : '#12151F',
+        border: `1.5px solid ${selected ? '#4D9DF2' : vcolor + '55'}`,
+        borderLeft: `3px solid ${vcolor}`,
+        borderRadius: 14,
+        minWidth: 200,
+        boxShadow: selected
+          ? `0 0 0 3px rgba(77,157,242,0.2), 0 6px 24px rgba(0,0,0,0.6)`
+          : `0 2px 12px rgba(0,0,0,0.4)`,
+        cursor: 'pointer', fontFamily: 'var(--font-ui)',
+        transition: 'box-shadow 0.2s, border-color 0.2s',
+        animation: 'nodeAppear 0.35s cubic-bezier(0.34,1.56,0.64,1) both',
+      }}>
+        <Handle type="target" position={Position.Top}    style={H} />
+        <Handle type="source" position={Position.Bottom} style={H} />
+        <Handle type="target" position={Position.Left}   style={H} />
+        <Handle type="source" position={Position.Right}  style={H} />
+        <div style={{ padding: '10px 14px 12px', paddingLeft: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 7 }}>
+            <IconRouter color={vcolor}/>
+            <div style={{
+              width: 6, height: 6, borderRadius: '50%', background: status.color, flexShrink: 0,
+              animation: status.pulse ? 'topo-pulse 1.8s ease-in-out infinite' : 'none',
+            }}/>
+            <span style={{ fontSize: 9, color: vcolor, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>
+              {data.vendor || 'ROUTER'}
+            </span>
+          </div>
+          <div style={{
+            fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 700,
+            color: '#E4E7EB', marginBottom: 2,
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          }}>
+            {data.label}
+          </div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: '#8B93A3', marginBottom: data.model ? 3 : 0 }}>
+            {data.managementIp}
+          </div>
+          {data.model && (
+            <div style={{ fontSize: 10, color: '#5A6275' }}>
+              {data.model}{data.osVersion ? ` · ${data.osVersion}` : ''}
+            </div>
+          )}
+        </div>
+        <PulseStyle color={status.color}/>
+      </div>
+    );
+  }
+
+  // ── SWITCH ────────────────────────────────────────────────────────────────
+  // (default pentru SWITCH + UNKNOWN con IP real)
   return (
     <div style={{
-      background: selected ? '#1E2535' : '#131720',
-      border: `1.5px solid ${selected ? '#4D9DF2' : '#252A35'}`,
-      borderRadius: 10,
+      background: selected ? '#141C18' : '#0E1610',
+      border: `1.5px solid ${selected ? '#4D9DF2' : vcolor + '44'}`,
+      borderTop: `3px solid ${vcolor}`,
+      borderRadius: 8,
       minWidth: 200,
       boxShadow: selected
-        ? '0 0 0 3px rgba(77,157,242,0.25), 0 6px 24px rgba(0,0,0,0.6)'
-        : '0 2px 12px rgba(0,0,0,0.4)',
-      fontFamily: 'var(--font-ui)',
-      overflow: 'hidden',
-      cursor: 'pointer',
-      transition: 'box-shadow 0.2s ease, border-color 0.2s ease, background 0.15s ease',
+        ? `0 0 0 3px rgba(77,157,242,0.2), 0 6px 24px rgba(0,0,0,0.6)`
+        : `0 2px 12px rgba(0,0,0,0.4)`,
+      cursor: 'pointer', fontFamily: 'var(--font-ui)',
+      transition: 'box-shadow 0.2s, border-color 0.2s',
       animation: 'nodeAppear 0.35s cubic-bezier(0.34,1.56,0.64,1) both',
     }}>
-      <Handle type="target" position={Position.Top}
-        style={{ background: '#353C4A', width: 8, height: 8, border: '2px solid #252A35' }} />
-      <Handle type="source" position={Position.Bottom}
-        style={{ background: '#353C4A', width: 8, height: 8, border: '2px solid #252A35' }} />
-
-      {/* vendor color strip */}
-      <div style={{ height: 3, background: vcolor }} />
-
+      <Handle type="target" position={Position.Top}    style={H} />
+      <Handle type="source" position={Position.Bottom} style={H} />
+      <Handle type="target" position={Position.Left}   style={H} />
+      <Handle type="source" position={Position.Right}  style={H} />
       <div style={{ padding: '10px 14px 12px' }}>
-        {/* header row */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-          {/* vendor badge */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 7 }}>
+          <IconSwitch color={vcolor}/>
           <div style={{
-            width: 22, height: 22, borderRadius: 5,
-            background: vcolor + '22',
-            border: `1px solid ${vcolor}55`,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 11, fontWeight: 700, color: vcolor,
-            flexShrink: 0,
-          }}>
-            {VENDOR_ICON[data.vendor] || '?'}
-          </div>
-
-          {/* status dot */}
-          <div style={{
-            width: 7, height: 7, borderRadius: '50%',
-            background: status.color, flexShrink: 0,
+            width: 6, height: 6, borderRadius: '50%', background: status.color, flexShrink: 0,
             animation: status.pulse ? 'topo-pulse 1.8s ease-in-out infinite' : 'none',
-          }} />
-
-          <span style={{
-            fontSize: 10, color: 'var(--text-tertiary)',
-            textTransform: 'uppercase', letterSpacing: 0.5,
-          }}>
-            {data.vendor || 'UNKNOWN'}
+          }}/>
+          <span style={{ fontSize: 9, color: vcolor, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>
+            {data.vendor || 'SWITCH'}
           </span>
         </div>
-
-        {/* hostname */}
         <div style={{
-          fontFamily: 'var(--font-mono)',
-          fontSize: 13, fontWeight: 700,
-          color: 'var(--text-primary)',
-          marginBottom: 3,
+          fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 700,
+          color: '#E4E7EB', marginBottom: 2,
           whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
         }}>
           {data.label}
         </div>
-
-        {/* IP */}
-        <div style={{
-          fontFamily: 'var(--font-mono)',
-          fontSize: 11, color: 'var(--text-secondary)',
-          marginBottom: data.model ? 4 : 0,
-        }}>
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: '#8B93A3', marginBottom: data.model ? 3 : 0 }}>
           {data.managementIp}
         </div>
-
-        {/* model */}
         {data.model && (
-          <div style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
-            {data.model} {data.osVersion ? `· ${data.osVersion}` : ''}
-          </div>
-        )}
-
-        {/* UNKNOWN badge cu sysDescr hint */}
-        {data.vendor === 'UNKNOWN' && data.sysDescr && (
-          <div style={{
-            marginTop: 6, fontSize: 10,
-            color: '#F2A93B', background: 'rgba(242,169,59,0.08)',
-            border: '1px solid rgba(242,169,59,0.2)',
-            borderRadius: 4, padding: '2px 6px',
-            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-          }} title={data.sysDescr}>
-            {data.sysDescr.substring(0, 40)}...
+          <div style={{ fontSize: 10, color: '#5A6275' }}>
+            {data.model}{data.osVersion ? ` · ${data.osVersion}` : ''}
           </div>
         )}
       </div>
-
-      <style>{`
-        @keyframes topo-pulse {
-          0%   { box-shadow: 0 0 0 0 ${status.color}66; }
-          70%  { box-shadow: 0 0 0 7px transparent; }
-          100% { box-shadow: 0 0 0 0 transparent; }
-        }
-      `}</style>
+      <PulseStyle color={status.color}/>
     </div>
+  );
+}
+
+function PulseStyle({ color }) {
+  return (
+    <style>{`
+      @keyframes topo-pulse {
+        0%   { box-shadow: 0 0 0 0 ${color}55; }
+        70%  { box-shadow: 0 0 0 6px transparent; }
+        100% { box-shadow: 0 0 0 0 transparent; }
+      }
+    `}</style>
   );
 }
 

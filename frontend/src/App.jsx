@@ -53,24 +53,34 @@ function mkNode(raw, position) {
   };
 }
 
+// Curata si scurteaza un port name din LLDP
+// "529 :: LACP-1/2-AE0" → "ae0" (detectam LAG/LACP si extragem numele)
+// "ge-0/0/1" → "ge-0/0/1"
 function cleanPort(s) {
   if (!s) return '';
-  // scoatem indexul SNMP din prefix: "529 :: ge-0/0/1" → "ge-0/0/1"
-  return s.replace(/^\d+\s*::\s*/, '').trim().substring(0, 14);
+  let clean = s.replace(/^\d+\s*::\s*/, '').trim();
+  // detectam LACP/LAG descriere si extragem numai interfata
+  const lagMatch = clean.match(/(?:LACP[^\s]*|LAG[^\s]*|ae\d+|bond\d+|Po\d+)/i);
+  if (lagMatch) clean = lagMatch[0].toLowerCase();
+  // trunchierea finala
+  return clean.length > 12 ? clean.substring(0, 12) : clean;
 }
 
 function mkEdge(raw) {
   const si = cleanPort(raw.sourceInterface);
   const ti = cleanPort(raw.targetInterface);
+  const label = si && ti ? `${si} ↔ ${ti}` : (si || ti || undefined);
   return {
     id:     String(raw.id),
     source: String(raw.source),
     target: String(raw.target),
-    type:   'smoothstep',
-    label:  si && ti ? `${si} ↔ ${ti}` : undefined,
-    labelStyle:   { fill: '#5A6275', fontSize: 10, fontFamily: 'JetBrains Mono,monospace' },
-    labelBgStyle: { fill: '#0B0E14', fillOpacity: 0.85 },
-    style: { stroke: '#3DDC84', strokeWidth: 1.8 },
+    type:   'default',           // bezier curve — mai organic decat smoothstep
+    label,
+    labelStyle:   { fill: '#8B93A3', fontSize: 11, fontFamily: 'JetBrains Mono,monospace', fontWeight: 600 },
+    labelBgStyle: { fill: '#0B0E14', fillOpacity: 0.9 },
+    labelBgPadding: [4, 6],
+    labelBgBorderRadius: 4,
+    style: { stroke: '#3DDC84', strokeWidth: 1.6 },
     animated: false,
   };
 }
@@ -97,7 +107,9 @@ export default function App() {
   });
 
   // React Flow instance (pentru fitView)
-  const rfRef   = useRef(null);
+  const rfRef          = useRef(null);
+  // Pozitiile "acasa" ale nodurilor dupa dagre — pentru spring-back
+  const homePositions  = useRef({});
   // Ref-uri pentru closure-safe access in WebSocket handler
   const edgesRef = useRef(edges);
   useEffect(() => { edgesRef.current = edges; }, [edges]);
@@ -120,9 +132,37 @@ export default function App() {
   }, []);
 
   const applyLayout = useCallback(() => {
-    setNodes(curr => dagreLayout(curr, edgesRef.current));
+    setNodes(curr => {
+      const laid = dagreLayout(curr, edgesRef.current);
+      // salveaza pozitiile "acasa" pentru spring-back
+      laid.forEach(n => { homePositions.current[n.id] = { ...n.position }; });
+      return laid;
+    });
     fitView();
   }, [fitView]);
+
+  // Spring-back: cand userul elibereaza un nod, il animam inapoi la pozitia dagre
+  const onNodeDragStop = useCallback((_, node) => {
+    const home = homePositions.current[node.id];
+    if (!home) return;
+
+    const startX = node.position.x;
+    const startY = node.position.y;
+    const startTime = performance.now();
+    const duration  = 450;
+
+    const step = (now) => {
+      const t    = Math.min((now - startTime) / duration, 1);
+      const ease = 1 - Math.pow(1 - t, 3); // ease-out cubic
+      setNodes(prev => prev.map(n =>
+        n.id === node.id
+          ? { ...n, position: { x: startX + (home.x - startX) * ease, y: startY + (home.y - startY) * ease } }
+          : n
+      ));
+      if (t < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }, [setNodes]);
 
   // ── Load topology ────────────────────────────────────────────────────────
   const loadTopology = useCallback(() => {
@@ -134,7 +174,9 @@ export default function App() {
         const fe = (graph.edges || []).map(mkEdge);
         setEdges(fe);
         edgesRef.current = fe;
-        setNodes(dagreLayout(fn, fe));
+        const laid = dagreLayout(fn, fe);
+        laid.forEach(n => { homePositions.current[n.id] = { ...n.position }; });
+        setNodes(laid);
         fitView();
       })
       .catch(e => setTopoErr(e.message || 'Eroare'))
@@ -483,6 +525,7 @@ export default function App() {
             onEdgesChange={onEdgesChange}
             onNodeClick={(_, n) => setSelectedId(n.id)}
             onPaneClick={() => { setSelectedId(null); setConfirmReset(false); }}
+            onNodeDragStop={onNodeDragStop}
             nodeTypes={nodeTypes}
             onInit={inst => { rfRef.current = inst; }}
             fitView

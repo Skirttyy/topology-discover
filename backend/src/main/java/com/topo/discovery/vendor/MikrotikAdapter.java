@@ -9,13 +9,15 @@ import java.util.regex.Pattern;
 /**
  * Adapter pentru RouterOS (MikroTik).
  *
- * Comenzi folosite:
- *   /system resource print  -> model, versiune RouterOS
+ * Comenzi SSH folosite:
  *   /system identity print  -> hostname
+ *   /system resource print  -> model (board-name), versiune, arhitectura
  *
- * SNMP standard (IF-MIB, LLDP-MIB) functioneaza pe RouterOS >= 6.x cu pachetul
- * "ip neighbor" activat si SNMP configurat. Neighbor Discovery Protocol (NDP/CDP)
- * poate fi activat separat; LLDP e suportat din RouterOS 6.49+.
+ * ATENTIE: RouterOS SSH are un prompt interactiv propriu, dar comenzile
+ * non-interactive cu JSch functioneaza daca sunt trimise ca un singur string.
+ * MikroTik seteaza hostname-ul cu "name" in /system identity.
+ *
+ * SNMP: RouterOS suporta IF-MIB standard. LLDP e disponibil din 6.49+.
  */
 @Component
 public class MikrotikAdapter implements VendorAdapter {
@@ -30,32 +32,35 @@ public class MikrotikAdapter implements VendorAdapter {
 
     @Override
     public String getShowVersionCommand() {
-        // /system resource print returneaza model + versiune RouterOS
-        return "/system resource print";
+        // Combinam identity + resource intr-un singur command SSH
+        // (JSch executa fiecare comanda in propria sesiune, deci facem un singur apel)
+        return "/system identity print\n/system resource print";
     }
 
     @Override
     public ParsedVersionInfo parseVersionOutput(String raw) {
-        if (raw == null) return new ParsedVersionInfo(null, null, null, null);
+        if (raw == null || raw.isBlank()) return new ParsedVersionInfo(null, null, null, null);
 
-        // hostname din /system identity print (daca e inclus in output)
-        String hostname = extract(raw, "(?i)name:\\s*(.+)");
+        // Hostname: "name: MyRouter" din /system identity print
+        String hostname = extract(raw, "(?m)^\\s*name:\\s*(.+)$");
 
-        // board-name: RB3011UiAS-RM
-        String model = extract(raw, "(?i)board-name:\\s*(.+)");
-        if (model == null) model = extract(raw, "(?i)platform:\\s*(.+)");
+        // Model/platform: "board-name: RB3011UiAS-RM" sau "platform: MikroTik"
+        String model = extract(raw, "(?m)^\\s*board-name:\\s*(.+)$");
+        if (model == null) model = extract(raw, "(?m)^\\s*platform:\\s*(.+)$");
 
-        // version: 7.14.3 (stable)
-        String version = extract(raw, "(?i)version:\\s*(\\S+)");
+        // Versiune RouterOS: "version: 7.14.3 (stable)"
+        String version = extract(raw, "(?m)^\\s*version:\\s*(\\S+(?:\\s+\\(\\S+\\))?)$");
+        // scurteaza "(stable)" daca e prea lung
+        if (version != null) version = version.replaceAll("\\s*\\(\\w+\\)", "").trim();
 
-        // serial: nu e in /system resource, dar il putem extrage daca e in output
-        String serial = extract(raw, "(?i)serial-number:\\s*(\\S+)");
+        // Serial: nu apare in /system resource, dar unele modele il afiseaza
+        String serial = extract(raw, "(?m)^\\s*serial-number:\\s*(\\S+)$");
 
         return new ParsedVersionInfo(hostname, model, version, serial);
     }
 
     private String extract(String text, String regex) {
-        Matcher m = Pattern.compile(regex, Pattern.MULTILINE).matcher(text);
+        Matcher m = Pattern.compile(regex, Pattern.CASE_INSENSITIVE).matcher(text);
         return m.find() ? m.group(1).trim() : null;
     }
 }

@@ -259,10 +259,18 @@ public class DiscoveryEngineService {
     private void pollViaSsh(Device device, String sshPassword) {
         try {
             VendorAdapter adapter = vendorAdapterFactory.getAdapter(device.getVendor());
+            String cmd = adapter.getShowVersionCommand();
+            log.debug("SSH [{}] catre {}: comanda '{}'",
+                    device.getVendor(), device.getManagementIp(), cmd);
+
             String versionOutput = sshExecutor.executeCommand(
                     device.getManagementIp(), SSH_PORT,
-                    device.getSshUsername(), sshPassword,
-                    adapter.getShowVersionCommand());
+                    device.getSshUsername(), sshPassword, cmd);
+
+            log.debug("SSH output de la {} ({} chars): {}",
+                    device.getManagementIp(),
+                    versionOutput.length(),
+                    versionOutput.length() > 300 ? versionOutput.substring(0, 300) + "..." : versionOutput);
 
             VendorAdapter.ParsedVersionInfo info = adapter.parseVersionOutput(versionOutput);
             if (info.hostname() != null && device.getHostname() == null) {
@@ -271,12 +279,14 @@ public class DiscoveryEngineService {
             if (info.model() != null) device.setModel(info.model());
             if (info.osVersion() != null) device.setOsVersion(info.osVersion());
             if (info.serialNumber() != null) device.setSerialNumber(info.serialNumber());
+
+            if (device.getVendor() == com.topo.discovery.model.Vendor.MIKROTIK) {
+                log.info("MikroTik SSH {} -> hostname={} model={} version={}",
+                        device.getManagementIp(), info.hostname(), info.model(), info.osVersion());
+            }
         } catch (Exception e) {
-            // SSH fail e non-fatal: continuam cu datele SNMP
             log.warn("SSH poll esuat pe {} [{}]: {}",
-                    device.getManagementIp(),
-                    device.getVendor(),
-                    e.getMessage());
+                    device.getManagementIp(), device.getVendor(), e.getMessage());
         }
     }
 
