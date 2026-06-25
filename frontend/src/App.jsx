@@ -54,52 +54,57 @@ function mkNode(raw, position) {
   };
 }
 
-/**
- * Extrage cel mai relevant nume de interfata din LLDP, cu prioritate:
- *
- * 1. Interfata de bonding explicita: "ae0", "ae1", "bond0", "Po1", "port-channel3"
- * 2. Numar AE extras din descriere LACP:  "LACP-1/2-AE0" → "ae0"
- *                                          "1/3-LACP-ae2" → "ae2"
- * 3. Member de bonding (fizic) cand stim ca face parte dintr-un bond (LACP/LAG in descriere)
- *    → returnam tot ce avem, truncat, prefixat cu "~" ca sa indicam ca e member
- * 4. Daca nu e nimic legat de bonding → returnam null (nu afisam nimic)
- *    (adica o interfata fizica simpla ge-0/0/x nu are sens pe un link de bonding)
- *
- * Nota: daca vrei sa afisezi si interfetele fizice normale,
- *        schimba pasul 4 sa returneze clean truncat.
- */
-function extractBondIf(s) {
-  if (!s) return null;
-  // Strip SNMP ifIndex prefix: "529 :: ge-0/0/1" → "ge-0/0/1"
-  const clean = s.replace(/^\d+\s*::\s*/, '').trim();
+// Strip SNMP prefix si curata un port name
+// "529 :: ge-0/0/1" → "ge-0/0/1"
+function stripSnmpPrefix(s) {
+  if (!s) return '';
+  return s.replace(/^\d+\s*::\s*/, '').trim();
+}
 
-  // 1. Interfata AE/bond directa (ex: "ae0", "ae-0/0/0", "bond3", "Po1", "port-channel2")
-  const direct = clean.match(/^(ae[\d\/\-]+|bond\d+|port-channel\d+|Po\d+)$/i);
+// Extrage cel mai bun nume de interfata, preferand bonding/AE:
+// "LACP-1/2-AE0"  → "ae0"
+// "ae0"           → "ae0"
+// "ge-0/0/1"      → "ge-0/0/1"   (afisam si interfetele fizice)
+// null/""         → null
+function bestIfName(s) {
+  if (!s) return null;
+  const clean = stripSnmpPrefix(s);
+  if (!clean) return null;
+
+  // 1. AE number din LACP descriere: "LACP-1/2-AE0" → "ae0"
+  const aeInLacp = clean.match(/\bAE(\d+)\b/i);
+  if (aeInLacp) return `ae${aeInLacp[1]}`;
+
+  // 2. AE/bond direct ca intreg string sau la inceput: "ae0", "ae-0/0/0", "bond3", "Po1"
+  const direct = clean.match(/^(ae[\d\/\-]+|bond\d+|port-channel\d+|po\d+)\b/i);
   if (direct) return direct[1].toLowerCase();
 
-  // 2. AE extras din descriere LACP (ex: "LACP-1/2-AE0" sau "1/3/LACP-ae2")
-  const aeNum = clean.match(/\bAE(\d+)\b/i);
-  if (aeNum) return `ae${aeNum[1]}`;
+  // 3. "ae0" undeva in string: "lag-ae0-member" → "ae0"
+  const aeMid = clean.match(/\b(ae\d+)\b/i);
+  if (aeMid) return aeMid[1].toLowerCase();
 
-  // Daca AE e scris fara prefix (ex: "ae0" in mijlocul unui string mai lung)
-  const aeMid = clean.match(/\bae(\d+)\b/i);
-  if (aeMid) return `ae${aeMid[1]}`;
-
-  // 3. Stim ca e LACP/LAG dar nu putem extrage nr AE — returnam un rezumat scurt
+  // 4. LACP/LAG fara nr AE — afisam primele caractere utile
   if (/\b(lacp|lag)\b/i.test(clean)) {
-    return clean.length > 10 ? clean.substring(0, 10) : clean;
+    const m = clean.match(/[a-z][\w\/\-]*/i);
+    return m ? (m[0].length > 10 ? m[0].substring(0, 10) : m[0]).toLowerCase() : clean.substring(0, 10);
   }
 
-  // 4. Interfata fizica simpla (ge-, xe-, et-, eth-, etc.) — nu afisam nimic
-  //    pe un link de bonding n-are sens sa aratam ge-0/0/1 individual
-  return null;
+  // 5. Interfata fizica normala (ge-0/0/1, xe-0/0/0, eth0, etc.)
+  //    → afisam, dar scurtam la 12 caractere
+  return clean.length > 12 ? clean.substring(0, 12) : clean;
 }
 
 function mkEdge(raw) {
-  const si = extractBondIf(raw.sourceInterface);
-  const ti = extractBondIf(raw.targetInterface);
-  // daca niciuna nu e de tip bonding, nu afisam label
-  const label = (si || ti) ? `${si || '?'} ↔ ${ti || '?'}` : undefined;
+  const si = bestIfName(raw.sourceInterface);
+  const ti = bestIfName(raw.targetInterface);
+
+  // Label: aratam ambele capete daca avem informatii
+  // Daca lipseste una dintre parti nu punem '?' — omitem acel capat
+  let label;
+  if (si && ti) label = `${si} ↔ ${ti}`;
+  else if (si)  label = si;
+  else if (ti)  label = ti;
+  else          label = undefined;
   return {
     id:     String(raw.id),
     source: String(raw.source),
