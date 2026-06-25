@@ -16,9 +16,8 @@ import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.*;
+import jakarta.annotation.PreDestroy;
 
 /**
  * Colecteaza date prin SNMP v2c folosind MIB-uri standard.
@@ -44,6 +43,21 @@ public class SnmpCollector {
     @Value("${discovery.snmp.retries}")
     private int retries;
 
+    // Pool dedicat pentru walk-urile SNMP paralele.
+    // ForkJoinPool comun e saturat cand 6+ device-uri ruleaza 8 walk-uri simultan (48 task-uri)
+    // ceea ce cauzeaza timeout inainte ca task-urile sa inceapa executia.
+    // CachedThreadPool garanteaza un thread per task, indiferent de incarcare.
+    private final ExecutorService snmpPool = Executors.newCachedThreadPool(r -> {
+        Thread t = new Thread(r, "snmp-walk");
+        t.setDaemon(true);
+        return t;
+    });
+
+    @PreDestroy
+    public void shutdown() {
+        snmpPool.shutdown();
+    }
+
     // --- System MIB ---
     private static final String OID_SYS_DESCR = "1.3.6.1.2.1.1.1.0";
     private static final String OID_SYS_NAME  = "1.3.6.1.2.1.1.5.0";
@@ -62,6 +76,7 @@ public class SnmpCollector {
 
     // --- IF-MIB ---
     private static final String OID_IF_DESCR        = "1.3.6.1.2.1.2.2.1.2";
+    private static final String OID_IF_NAME         = "1.3.6.1.2.1.31.1.1.1.1"; // ifXTable - mai fiabil pe vQFX
     private static final String OID_IF_PHYS_ADDR    = "1.3.6.1.2.1.2.2.1.6";
     private static final String OID_IF_ADMIN_STATUS = "1.3.6.1.2.1.2.2.1.7";
     private static final String OID_IF_OPER_STATUS  = "1.3.6.1.2.1.2.2.1.8";
@@ -196,7 +211,8 @@ public class SnmpCollector {
     public List<InterfaceEntry> walkInterfaces(String host, String community) {
         List<InterfaceEntry> result = new ArrayList<>();
         try {
-            int timeoutSec = (timeoutMs * 2) / 1000 + 5;
+            // vQFX/QFX pot avea 40+ interfete — timeout mai generos ca sa completeze walk-ul
+            int timeoutSec = (timeoutMs * 3) / 1000 + 15;
 
             // Lansam toate walk-urile IF-MIB in paralel
             CompletableFuture<List<SnmpEntry>> descrF  = walkAsync(host, community, OID_IF_DESCR);
@@ -208,6 +224,9 @@ public class SnmpCollector {
             CompletableFuture<List<SnmpEntry>> ipIdxF  = walkAsync(host, community, OID_IP_ADDR_IFINDEX);
             CompletableFuture<List<SnmpEntry>> ipMaskF = walkAsync(host, community, OID_IP_ADDR_NETMASK);
 
+            // Lansam si ifXTable.ifName in paralel — fallback pentru vQFX unde ifDescr e gol
+            CompletableFuture<List<SnmpEntry>> ifNameF = walkAsync(host, community, OID_IF_NAME);
+
             // safeGet nu arunca niciodata exceptie (gestioneaza InterruptedException, Timeout, etc.)
             List<SnmpEntry> descrs   = safeGet(descrF,  timeoutSec);
             List<SnmpEntry> macs     = safeGet(macF,    timeoutSec);
@@ -218,10 +237,23 @@ public class SnmpCollector {
             List<SnmpEntry> ipIfIdx  = safeGet(ipIdxF,  timeoutSec);
             List<SnmpEntry> ipMasks  = safeGet(ipMaskF, timeoutSec);
 
+            // Fallback: daca ifDescr e gol (vQFX, unele switch-uri) folosim ifXTable.ifName
+            String activeDescrOid = OID_IF_DESCR;
             if (descrs.isEmpty()) {
-                log.debug("IF-MIB walk: nicio interfata returnata de {}", host);
-                return result;
+                List<SnmpEntry> ifNames = safeGet(ifNameF, timeoutSec);
+                if (!ifNames.isEmpty()) {
+                    log.debug("IF-MIB ifDescr gol pentru {}, folosim ifXTable.ifName ({} intrari)", host, ifNames.size());
+                    descrs = ifNames;
+                    activeDescrOid = OID_IF_NAME;
+                } else {
+                    log.debug("IF-MIB walk: nicio interfata returnata de {} (nici ifDescr nici ifName)", host);
+                    return result;
+                }
+            } else {
+                ifNameF.cancel(true); // nu mai avem nevoie
             }
+
+            final String descrOid = activeDescrOid; // efectiv final pentru lambda
 
             // IP addresses per ifIndex
             Map<String, String> ifIndexToIp      = new HashMap<>();
@@ -234,7 +266,7 @@ public class SnmpCollector {
             }
 
             for (SnmpEntry descr : descrs) {
-                String ifIndex = stripPrefix(descr.oid(), OID_IF_DESCR);
+                String ifIndex = stripPrefix(descr.oid(), descrOid);
                 String mac     = findByIndex(macs, OID_IF_PHYS_ADDR, ifIndex);
                 String admin   = mapStatus(findByIndex(adminSts, OID_IF_ADMIN_STATUS, ifIndex));
                 String oper    = mapStatus(findByIndex(operSts, OID_IF_OPER_STATUS, ifIndex));
@@ -276,7 +308,7 @@ public class SnmpCollector {
 
     // ---- Async helpers ----
 
-    /** Ruleaza un SNMP walk asincron pe ForkJoinPool.commonPool(). */
+    /** Ruleaza un SNMP walk asincron pe pool-ul dedicat SNMP (nu ForkJoinPool). */
     private CompletableFuture<List<SnmpEntry>> walkAsync(String host, String community, String baseOid) {
         return CompletableFuture.supplyAsync(() -> {
             try {
@@ -285,7 +317,7 @@ public class SnmpCollector {
                 log.debug("walkAsync esuat {}/{}: {}", host, baseOid, e.getMessage());
                 return List.<SnmpEntry>of();
             }
-        });
+        }, snmpPool); // pool dedicat — garanteaza thread disponibil imediat
     }
 
     /**

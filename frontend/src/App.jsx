@@ -20,48 +20,107 @@ const edgeTypes = { labeled: LabeledEdge };
 // ─── Dagre layout ───────────────────────────────────────────────────────────
 const NW = 224, NH = 108;
 
+// ─── Detectie rol in topologie dupa conventii de naming ─────────────────────
+const ROLE_RANK = { internet: 0, wan: 0, tunnel: 0, firewall: 0, core: 1, border: 1, dist: 2, spine: 2, agg: 2, leaf: 3, access: 3, edge: 3, placeholder: 5 };
+
+function detectNodeRank(node) {
+  const label = (node.data?.label || '').toLowerCase();
+  const model = (node.data?.model || '').toLowerCase();
+  const ip    = (node.data?.managementIp || '').toLowerCase();
+  const vendor = node.data?.vendor || 'UNKNOWN';
+
+  if (ip.startsWith('lldp:')) return 5; // placeholder
+
+  for (const [keyword, rank] of Object.entries(ROLE_RANK)) {
+    if (label.includes(keyword)) return rank;
+  }
+
+  // detectie din model
+  if (model.includes('vmx') || model.includes('-mx') || model.includes('ptx')) return 1; // core/router
+  if (model.includes('qfx') || model.includes('ex') || model.includes('arista')) return 3; // switch/leaf
+  if (vendor === 'MIKROTIK') return 0; // de obicei edge/WAN
+
+  return 4; // necunoscut
+}
+
+// Layout ierarhic piramidal: grupeaza nodurile pe niveluri (rank),
+// spatieaza uniform in cadrul fiecarui nivel
+function hierarchicalLayout(nodes, edges) {
+  if (!nodes.length) return nodes;
+
+  const LEVEL_HEIGHT = 180;
+  const NODE_GAP     = 60;
+  const START_Y      = 60;
+
+  // Grupeaza pe rank
+  const byRank = new Map();
+  nodes.forEach(n => {
+    const rank = detectNodeRank(n);
+    if (!byRank.has(rank)) byRank.set(rank, []);
+    byRank.get(rank).push(n);
+  });
+
+  // Sorteaza nivelurile
+  const sortedRanks = [...byRank.keys()].sort((a, b) => a - b);
+
+  // Calculeaza latimea maxima pentru centrare
+  let maxLevelWidth = 0;
+  byRank.forEach(levelNodes => {
+    const w = levelNodes.length * (NW + NODE_GAP) - NODE_GAP;
+    if (w > maxLevelWidth) maxLevelWidth = w;
+  });
+
+  const result = [];
+  sortedRanks.forEach((rank, levelIdx) => {
+    const levelNodes = byRank.get(rank);
+    const levelWidth = levelNodes.length * (NW + NODE_GAP) - NODE_GAP;
+    const startX = (maxLevelWidth - levelWidth) / 2 + 80;
+    const y = START_Y + levelIdx * LEVEL_HEIGHT;
+
+    levelNodes.forEach((n, i) => {
+      result.push({
+        ...n,
+        position: { x: startX + i * (NW + NODE_GAP), y },
+      });
+    });
+  });
+
+  return result;
+}
+
+// Aplica layout ierarhic + fallback dagre pentru grafuri complexe
 function dagreLayout(nodes, edges) {
   if (!nodes.length) return nodes;
+
+  // Incercam intai layout ierarhic bazat pe conventii de naming
+  const hierarchical = hierarchicalLayout(nodes, edges);
+
+  // Verificam daca layout-ul ierarhic e util (cel putin 2 niveluri diferite)
+  const ranks = new Set(nodes.map(n => detectNodeRank(n)));
+  if (ranks.size >= 2) {
+    return hierarchical; // avem ierarhie clara — folosim layout-ul semantic
+  }
+
+  // Fallback: dagre pentru grafuri fara ierarhie clara
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
-  g.setGraph({
-    rankdir:  'TB',          // top-to-bottom
-    ranker:   'tight-tree',  // layout piramidal mai curat decat default
-    nodesep:  100,           // distanta orizontala intre noduri pe acelasi nivel
-    ranksep:  140,           // distanta verticala intre niveluri
-    marginx:  60,
-    marginy:  60,
-    align:    'UL',          // aliniere upper-left — mai stabil vizual
-  });
+  g.setGraph({ rankdir: 'TB', ranker: 'tight-tree', nodesep: 100, ranksep: 150, marginx: 60, marginy: 60 });
 
   nodes.forEach(n => g.setNode(n.id, { width: NW, height: NH }));
-
   const ids = new Set(nodes.map(n => n.id));
   edges.forEach(e => {
-    if (ids.has(e.source) && ids.has(e.target) && e.source !== e.target) {
-      g.setEdge(e.source, e.target);
-    }
+    if (ids.has(e.source) && ids.has(e.target) && e.source !== e.target) g.setEdge(e.source, e.target);
   });
-
   dagre.layout(g);
 
-  // Nodurile fara edges (izolate) le aranjam separat in rand la baza
-  const laid = nodes.map(n => {
-    const p = g.node(n.id);
-    return p ? { ...n, position: { x: p.x - NW / 2, y: p.y - NH / 2 } } : n;
-  });
-
-  // Nodurile la pozitia (0,0) n-au primit pozitie de la dagre (izolate)
+  const allY = nodes.map(n => { const p = g.node(n.id); return p ? p.y : 0; }).filter(isFinite);
+  const maxY = allY.length ? Math.max(0, ...allY) : 0;
   let isoX = 60;
-  const allY = laid.map(n => n.position?.y).filter(y => typeof y === 'number' && isFinite(y));
-  const maxY = allY.length > 0 ? Math.max(0, ...allY) : 0;
-  return laid.map(n => {
-    if (n.position.x === -NW / 2 && n.position.y === -NH / 2) {
-      const pos = { x: isoX, y: maxY + 200 };
-      isoX += NW + 40;
-      return { ...n, position: pos };
-    }
-    return n;
+
+  return nodes.map(n => {
+    const p = g.node(n.id);
+    if (!p) { const pos = { x: isoX, y: maxY + 200 }; isoX += NW + 40; return { ...n, position: pos }; }
+    return { ...n, position: { x: p.x - NW / 2, y: p.y - NH / 2 } };
   });
 }
 
