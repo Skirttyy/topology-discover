@@ -196,15 +196,15 @@ public class DiscoveryEngineService {
             deviceRepository.save(device);
 
             // Pasul 1: detectie vendor prin SNMP sysDescr
-            String sysDescr = null;
-            try {
-                sysDescr = snmpCollector.getSysDescr(device.getManagementIp(), snmpCommunity);
-            } catch (Exception e) {
-                warnings.add("[SNMP] sysDescr esuat: " + e.getMessage());
-                log.warn("SNMP sysDescr esuat pe {}: {}", device.getManagementIp(), e.getMessage());
-            }
-
-            if (sysDescr != null) {
+            // ATENTIE: getSysDescr() inghite exceptiile intern si returneaza null.
+            // Trebuie sa verificam null explicit ca sa adaugam warning.
+            String sysDescr = snmpCollector.getSysDescr(device.getManagementIp(), snmpCommunity);
+            if (sysDescr == null) {
+                warnings.add("[SNMP] sysDescr: timeout sau community gresit (community='"
+                        + (snmpCommunity != null ? snmpCommunity : "null") + "')");
+                log.warn("SNMP sysDescr null pe {} — SNMP posibil neconfigurat sau community gresit",
+                        device.getManagementIp());
+            } else {
                 device.setSysDescr(sysDescr.length() > 1000 ? sysDescr.substring(0, 1000) : sysDescr);
                 if (device.getVendor() == Vendor.UNKNOWN || device.getVendor() == null) {
                     Vendor detected = Vendor.detect(sysDescr);
@@ -214,21 +214,30 @@ public class DiscoveryEngineService {
             }
 
             // hostname din SNMP
-            try {
-                String sysName = snmpCollector.getSysName(device.getManagementIp(), snmpCommunity);
-                if (sysName != null && !sysName.isBlank()) {
-                    device.setHostname(sysName.trim());
-                }
-            } catch (Exception e) {
-                warnings.add("[SNMP] sysName esuat: " + e.getMessage());
+            String sysName = snmpCollector.getSysName(device.getManagementIp(), snmpCommunity);
+            if (sysName != null && !sysName.isBlank()) {
+                device.setHostname(sysName.trim());
+            } else if (sysDescr == null) {
+                // daca si sysName e null, SNMP e complet nefunctional pe acest device
+                warnings.add("[SNMP] sysName: indisponibil");
             }
 
             // Pasul 2: SSH pentru model/version
-            if (device.getVendor() != Vendor.UNKNOWN && sshPassword != null) {
+            if (sshPassword == null) {
+                warnings.add("[SSH] Parola SSH lipsa — SSH sarit");
+            } else if (device.getVendor() != Vendor.UNKNOWN) {
+                // Vendor cunoscut — folosim adapter-ul corespunzator
                 String sshErr = pollViaSsh(device, sshPassword);
                 if (sshErr != null) warnings.add("[SSH] " + sshErr);
-            } else if (sshPassword == null) {
-                warnings.add("[SSH] Parola SSH lipsa — SSH sarit");
+            } else {
+                // Vendor UNKNOWN (SNMP a esuat sau nu a detectat) — probam SSH ca sa detectam vendor-ul.
+                // Incercam MikroTik, Arista, Juniper in ordine.
+                log.info("Vendor UNKNOWN pe {} — probam SSH pentru detectie", device.getManagementIp());
+                String probeErr = probeVendorViaSsh(device, sshPassword);
+                if (probeErr != null) {
+                    warnings.add("[SSH probe] " + probeErr);
+                    log.warn("SSH probe esuat pe {}: {}", device.getManagementIp(), probeErr);
+                }
             }
 
             // Pasul 3: interfete prin SNMP
@@ -286,6 +295,60 @@ public class DiscoveryEngineService {
         }
 
         return newNeighbors;
+    }
+
+    /**
+     * Probeaza SSH pentru a detecta vendor-ul unui device UNKNOWN.
+     * Incearca comenzile fiecarui vendor suportat si verifica outputul.
+     *
+     * Ordinea: MikroTik (cel mai probabil necunoscut), Arista, Juniper.
+     * Returneaza null daca vendor-ul a fost detectat si datele completate,
+     * sau mesajul de eroare daca niciun vendor nu a raspuns corespunzator.
+     */
+    private String probeVendorViaSsh(Device device, String sshPassword) {
+        Vendor[] vendors = { Vendor.MIKROTIK, Vendor.ARISTA, Vendor.JUNIPER };
+
+        for (Vendor v : vendors) {
+            try {
+                VendorAdapter adapter = vendorAdapterFactory.getAdapter(v);
+                String cmd = adapter.getShowVersionCommand();
+                log.debug("SSH probe [{}] catre {}: '{}'", v, device.getManagementIp(), cmd);
+
+                String out = sshExecutor.executeCommand(
+                        device.getManagementIp(), SSH_PORT,
+                        device.getSshUsername(), sshPassword, cmd);
+
+                if (out == null || out.isBlank()) continue;
+
+                log.debug("SSH probe output de la {} ({}): {}",
+                        device.getManagementIp(), v,
+                        out.length() > 200 ? out.substring(0, 200) + "..." : out);
+
+                // Verifica daca outputul corespunde vendor-ului probat
+                Vendor detected = Vendor.detect(out);
+                if (detected == v
+                        || (v == Vendor.MIKROTIK && (out.contains("board-name") || out.contains("RouterOS")))
+                        || (v == Vendor.JUNIPER  && (out.contains("Junos") || out.contains("JUNOS")))
+                        || (v == Vendor.ARISTA   && (out.contains("Arista") || out.contains("EOS")))) {
+
+                    Vendor finalVendor = (detected != Vendor.UNKNOWN) ? detected : v;
+                    device.setVendor(finalVendor);
+                    log.info("Vendor detectat via SSH probe pe {}: {}", device.getManagementIp(), finalVendor);
+
+                    VendorAdapter.ParsedVersionInfo info = adapter.parseVersionOutput(out);
+                    if (info.hostname()     != null && device.getHostname()     == null) device.setHostname(info.hostname());
+                    if (info.model()        != null) device.setModel(info.model());
+                    if (info.osVersion()    != null) device.setOsVersion(info.osVersion());
+                    if (info.serialNumber() != null) device.setSerialNumber(info.serialNumber());
+                    return null; // succes
+                }
+            } catch (Exception e) {
+                log.debug("SSH probe [{}] esuat pe {}: {}", v, device.getManagementIp(), e.getMessage());
+            }
+        }
+
+        return "Vendor nedetectabil via SSH (probate MIKROTIK, ARISTA, JUNIPER). "
+             + "Verifica credentialele SSH si SNMP community.";
     }
 
     /** Returneaza null daca SSH a reusit, sau mesajul de eroare daca a esuat (non-fatal). */
