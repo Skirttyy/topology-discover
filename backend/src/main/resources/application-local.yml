@@ -6,7 +6,7 @@ spring:
     password:
   jpa:
     hibernate:
-      ddl-auto: update
+      ddl-auto: create-drop   # recreaza schema la fiecare restart — necesar dupa adaugarea MIKROTIK enum
     show-sql: false
     properties:
       hibernate:

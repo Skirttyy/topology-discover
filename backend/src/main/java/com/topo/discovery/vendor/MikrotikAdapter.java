@@ -46,22 +46,18 @@ public class MikrotikAdapter implements VendorAdapter {
         // sau din /system identity: poate aparea ca "   name: X"
         String hostname = extract(raw, "(?m)^\\s*name:\\s*(.+)$");
 
-        // Model: "board-name: RB3011UiAS-RM" sau "board-name: CHR" (Cloud Hosted Router)
-        String model = extract(raw, "(?m)^\\s*board-name:\\s*(.+)$");
+        // Model: "board-name: CHR" sau "board-name: RB3011UiAS-RM"
+        // Pe CHR (QEMU), board-name poate fi "CHR QEMU Standard PC..." — luam doar primul token
+        String model = extract(raw, "(?m)^\\s*board-name:\\s*(\\S+)");
         if (model == null) {
-            // Fallback: "platform: MikroTik"
-            String platform = extract(raw, "(?m)^\\s*platform:\\s*(.+)$");
-            if (platform != null) model = "MikroTik " + platform.trim();
+            // Fallback: platform name
+            model = extract(raw, "(?m)^\\s*platform:\\s*(\\S+)");
         }
 
-        // Versiune RouterOS: "version: 7.14.3 (stable)" sau "version: 7.14.3"
-        String version = extract(raw, "(?m)^\\s*version:\\s*([\\d\\.]+(?:\\s+\\(\\S+\\))?)$");
-        if (version == null) {
-            // Fallback: extrage prima secventa de versiune
-            version = extract(raw, "(?m)^\\s*version:\\s*(\\S+)$");
-        }
-        // Scoatem "(stable)" din versiune
-        if (version != null) version = version.replaceAll("\\s*\\(\\w+\\)\\s*", "").trim();
+        // Versiune RouterOS: "version: 7.17 (stable)"
+        // Nu folosim $ la final — unele outputuri au \r\n sau spatii dupa
+        String version = extract(raw, "(?m)^\\s*version:\\s*([\\d][\\d\\.]+)");
+        if (version != null) version = version.trim();
 
         // Serial (disponibil pe RouterBOARD, nu pe CHR)
         String serial = extract(raw, "(?m)^\\s*serial-number:\\s*(\\S+)$");

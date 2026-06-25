@@ -22,16 +22,43 @@ function dagreLayout(nodes, edges) {
   if (!nodes.length) return nodes;
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
-  g.setGraph({ rankdir: 'TB', nodesep: 90, ranksep: 130, marginx: 50, marginy: 50 });
+  g.setGraph({
+    rankdir:  'TB',          // top-to-bottom
+    ranker:   'tight-tree',  // layout piramidal mai curat decat default
+    nodesep:  100,           // distanta orizontala intre noduri pe acelasi nivel
+    ranksep:  140,           // distanta verticala intre niveluri
+    marginx:  60,
+    marginy:  60,
+    align:    'UL',          // aliniere upper-left — mai stabil vizual
+  });
+
   nodes.forEach(n => g.setNode(n.id, { width: NW, height: NH }));
+
   const ids = new Set(nodes.map(n => n.id));
   edges.forEach(e => {
-    if (ids.has(e.source) && ids.has(e.target)) g.setEdge(e.source, e.target);
+    if (ids.has(e.source) && ids.has(e.target) && e.source !== e.target) {
+      g.setEdge(e.source, e.target);
+    }
   });
+
   dagre.layout(g);
-  return nodes.map(n => {
+
+  // Nodurile fara edges (izolate) le aranjam separat in rand la baza
+  const laid = nodes.map(n => {
     const p = g.node(n.id);
     return p ? { ...n, position: { x: p.x - NW / 2, y: p.y - NH / 2 } } : n;
+  });
+
+  // Nodurile la pozitia (0,0) n-au primit pozitie de la dagre (izolate)
+  let isoX = 60;
+  let maxY = Math.max(...laid.map(n => n.position.y), 0);
+  return laid.map(n => {
+    if (n.position.x === -NW / 2 && n.position.y === -NH / 2) {
+      const pos = { x: isoX, y: maxY + 200 };
+      isoX += NW + 40;
+      return { ...n, position: pos };
+    }
+    return n;
   });
 }
 
@@ -272,7 +299,11 @@ export default function App() {
         // afisam interfetele, nu device ID-urile (care sunt numere din DB, fara sens pentru user)
         const si = bestIfName(p.edge?.sourceInterface);
         const ti = bestIfName(p.edge?.targetInterface);
-        const linkLabel = (si || ti) ? `${si || '?'} ↔ ${ti || '?'}` : 'link nou';
+        let linkLabel;
+        if (si && ti) linkLabel = `${si} ↔ ${ti}`;
+        else if (si)  linkLabel = si;
+        else if (ti)  linkLabel = ti;
+        else          linkLabel = 'link';
         addMsg(`⟷ ${linkLabel}`, '#7C8CF8');
         setEdges(prev => {
           if (!eid) return prev;
