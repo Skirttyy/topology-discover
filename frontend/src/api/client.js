@@ -23,6 +23,8 @@ export const getTopology = () => api.get('/api/topology').then(r => r.data);
 // ---- Discovery ----
 export const scanSubnet = (payload) => api.post('/api/discovery/scan-subnet', payload).then(r => r.data);
 export const runDiscovery = (seedDeviceIds) => api.post('/api/discovery/run', seedDeviceIds).then(r => r.data);
+export const stopDiscovery = () => api.post('/api/discovery/stop').then(r => r.data);
 export const getDiscoveryStatus = () => api.get('/api/discovery/status').then(r => r.data);
+export const resetTopology = () => api.delete('/api/devices').then(r => r.data);
 
 export default api;

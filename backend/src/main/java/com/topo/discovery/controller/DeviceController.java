@@ -11,6 +11,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/devices")
@@ -41,5 +42,11 @@ public class DeviceController {
     public ResponseEntity<Void> deleteDevice(@PathVariable Long id) {
         deviceService.deleteById(id);
         return ResponseEntity.noContent().build();
+    }
+
+    @DeleteMapping
+    public ResponseEntity<Map<String, Integer>> deleteAllDevices() {
+        int count = deviceService.deleteAll();
+        return ResponseEntity.ok(Map.of("deletedDevices", count));
     }
 }

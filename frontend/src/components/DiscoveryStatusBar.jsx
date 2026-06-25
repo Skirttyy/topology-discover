@@ -10,7 +10,7 @@ import { WS_BASE_URL } from '../api/client';
  * - PROCESSING                     -> afiseaza ce se proceseaza
  * - COMPLETED / ERROR              -> stare finala
  */
-export default function DiscoveryStatusBar({ onNodeEvent, onLinkEvent, onCompleted }) {
+export default function DiscoveryStatusBar({ onNodeEvent, onLinkEvent, onCompleted, onStarted, onFinished }) {
   const [messages, setMessages] = useState([]);
   const [connected, setConnected] = useState(false);
   const clientRef = useRef(null);
@@ -40,6 +40,7 @@ export default function DiscoveryStatusBar({ onNodeEvent, onLinkEvent, onComplet
         case 'NODE_DISCOVERED':
           addMsg(`+ Descoperit: ${payload.node?.label || payload.node?.managementIp}`, 'var(--accent-active)');
           onNodeEvent?.(payload.node, 'discovered');
+          onStarted?.();
           break;
         case 'NODE_UPDATED':
           addMsg(`↻ Actualizat: ${payload.node?.label || payload.node?.managementIp}`, 'var(--accent-info)');
@@ -55,6 +56,12 @@ export default function DiscoveryStatusBar({ onNodeEvent, onLinkEvent, onComplet
         case 'COMPLETED':
           addMsg(`✓ Finalizat: ${payload.totalDevices} device-uri, ${payload.totalLinks} link-uri`, 'var(--accent-active)');
           onCompleted?.();
+          onFinished?.();
+          break;
+        case 'STOPPED':
+          addMsg(`⏹ Oprit: ${payload.totalDevices} device-uri, ${payload.totalLinks} link-uri`, 'var(--accent-warning)');
+          onCompleted?.();
+          onFinished?.();
           break;
         case 'ERROR':
           addMsg(`✗ Eroare: ${payload.message}`, 'var(--accent-error)');

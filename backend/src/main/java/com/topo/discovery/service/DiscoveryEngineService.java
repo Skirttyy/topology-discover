@@ -58,10 +58,17 @@ public class DiscoveryEngineService {
 
     // starea ultimei rulari - FARA valori null (ConcurrentHashMap nu accepta null)
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private final AtomicBoolean stopRequested = new AtomicBoolean(false);
     private final AtomicInteger devicesProcessed = new AtomicInteger(0);
     private volatile String lastError = "";
     private volatile String startedAt = "";
     private volatile String finishedAt = "";
+
+    public boolean requestStop() {
+        if (!running.get()) return false;
+        stopRequested.set(true);
+        return true;
+    }
 
     @Async
     public void runDiscoveryAsync(List<Long> seedDeviceIds) {
@@ -69,6 +76,7 @@ public class DiscoveryEngineService {
             log.warn("Discovery deja in curs , ignoram request-ul nou");
             return;
         }
+        stopRequested.set(false);
         devicesProcessed.set(0);
         lastError = "";
         startedAt = LocalDateTime.now().toString();
@@ -78,7 +86,12 @@ public class DiscoveryEngineService {
             runBfs(seedDeviceIds);
             finishedAt = LocalDateTime.now().toString();
             int totalLinks = linkRepository.findAll().size();
-            progressNotifier.notifyCompleted(devicesProcessed.get(), totalLinks);
+            if (stopRequested.get()) {
+                log.info("Discovery oprit manual dupa {} device-uri", devicesProcessed.get());
+                progressNotifier.notifyStopped(devicesProcessed.get(), totalLinks);
+            } else {
+                progressNotifier.notifyCompleted(devicesProcessed.get(), totalLinks);
+            }
         } catch (Exception e) {
             log.error("Discovery BFS esuat: {}", e.getMessage(), e);
             lastError = e.getMessage() != null ? e.getMessage() : "Eroare necunoscuta";
@@ -104,7 +117,7 @@ public class DiscoveryEngineService {
         Map<Long, Integer> depthMap = new HashMap<>();
         seedDeviceIds.forEach(id -> depthMap.put(id, 0));
 
-        while (!queue.isEmpty() && devicesProcessed.get() < maxDevices) {
+        while (!queue.isEmpty() && devicesProcessed.get() < maxDevices && !stopRequested.get()) {
             Long deviceId = queue.poll();
             if (visited.contains(deviceId)) continue;
             visited.add(deviceId);

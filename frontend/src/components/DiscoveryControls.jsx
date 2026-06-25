@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { scanSubnet } from '../api/client';
+import { scanSubnet, stopDiscovery, resetTopology } from '../api/client';
 
 const inputStyle = {
   background: '#1A1F2B',
@@ -23,7 +23,7 @@ const labelStyle = {
   display: 'block',
 };
 
-export default function DiscoveryControls({ onScanComplete, onRefresh }) {
+export default function DiscoveryControls({ onScanComplete, onRefresh, isRunning }) {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({
     subnet: '192.168.1.0/24',
@@ -33,10 +33,35 @@ export default function DiscoveryControls({ onScanComplete, onRefresh }) {
     snmpCommunity: '',
   });
   const [scanning, setScanning] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
 
   const set = (field) => (e) => setForm({ ...form, [field]: e.target.value });
+
+  const handleStop = async () => {
+    setStopping(true);
+    try { await stopDiscovery(); } catch (e) { /* ignoram */ }
+    finally { setStopping(false); }
+  };
+
+  const handleReset = async () => {
+    if (!confirmReset) { setConfirmReset(true); return; }
+    setResetting(true);
+    setConfirmReset(false);
+    setResult(null);
+    setError(null);
+    try {
+      await resetTopology();
+      onRefresh?.();
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Eroare la reset');
+    } finally {
+      setResetting(false);
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -65,14 +90,15 @@ export default function DiscoveryControls({ onScanComplete, onRefresh }) {
       border: '1px solid #252A35',
       borderRadius: 10,
       boxShadow: '0 4px 24px rgba(0,0,0,0.5)',
-      width: open ? 300 : 'auto',
+      minWidth: 'max-content',
+      width: open ? 320 : 'auto',
       transition: 'width 0.2s ease',
       overflow: 'hidden',
     }}>
       {/* toolbar */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px' }}>
         <button
-          onClick={() => setOpen(!open)}
+          onClick={() => { setOpen(!open); setConfirmReset(false); setError(null); setResult(null); }}
           style={{
             background: '#3DDC84', color: '#0B0E14',
             border: 'none', borderRadius: 6,
@@ -82,6 +108,25 @@ export default function DiscoveryControls({ onScanComplete, onRefresh }) {
         >
           {open ? '✕ Inchide' : '+ Subnet scan'}
         </button>
+
+        {/* Stop - vizibil doar cand discovery ruleaza */}
+        {isRunning && (
+          <button
+            onClick={handleStop}
+            disabled={stopping}
+            title="Opreste discovery-ul in curs"
+            style={{
+              background: stopping ? '#252A35' : 'rgba(242,84,91,0.12)',
+              border: '1px solid #F2545B',
+              borderRadius: 6, color: stopping ? '#5A6275' : '#F2545B',
+              padding: '6px 10px', fontSize: 11, fontWeight: 700,
+              cursor: stopping ? 'default' : 'pointer',
+            }}
+          >
+            {stopping ? '...' : '⏹ Stop'}
+          </button>
+        )}
+
         <button
           onClick={onRefresh}
           title="Reincarca topologia"
@@ -92,6 +137,25 @@ export default function DiscoveryControls({ onScanComplete, onRefresh }) {
             padding: '6px 10px', fontSize: 14, cursor: 'pointer',
           }}
         >↻</button>
+
+        {/* Reset - cu confirmare dubla */}
+        <button
+          onClick={handleReset}
+          disabled={resetting}
+          title={confirmReset ? 'Click din nou pentru confirmare' : 'Sterge toata topologia si porneste de la capat'}
+          style={{
+            background: confirmReset ? '#F2545B' : 'transparent',
+            border: `1px solid ${confirmReset ? '#F2545B' : '#252A35'}`,
+            borderRadius: 6,
+            color: confirmReset ? '#fff' : '#8B93A3',
+            padding: '6px 10px', fontSize: 11, fontWeight: confirmReset ? 700 : 400,
+            cursor: resetting ? 'default' : 'pointer',
+            transition: 'all 0.15s',
+          }}
+          onBlur={() => setConfirmReset(false)}
+        >
+          {resetting ? '...' : confirmReset ? '⚠ Confirma reset' : '⊘ Reset'}
+        </button>
       </div>
 
       {/* form */}

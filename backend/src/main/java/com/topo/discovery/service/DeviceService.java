@@ -5,6 +5,8 @@ import com.topo.discovery.dto.CreateDeviceRequest;
 import com.topo.discovery.model.Device;
 import com.topo.discovery.model.DeviceStatus;
 import com.topo.discovery.repository.DeviceRepository;
+import com.topo.discovery.repository.LinkRepository;
+import com.topo.discovery.repository.NetworkInterfaceRepository;
 import com.topo.discovery.security.CredentialEncryptionService;
 import com.topo.discovery.vendor.VendorAdapter;
 import com.topo.discovery.vendor.VendorAdapterFactory;
@@ -12,6 +14,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Optional;
@@ -22,6 +25,8 @@ import java.util.Optional;
 public class DeviceService {
 
     private final DeviceRepository deviceRepository;
+    private final LinkRepository linkRepository;
+    private final NetworkInterfaceRepository interfaceRepository;
     private final CredentialEncryptionService encryptionService;
     private final SshCommandExecutor sshExecutor;
     private final VendorAdapterFactory vendorAdapterFactory;
@@ -93,6 +98,16 @@ public class DeviceService {
 
     public void deleteById(Long id) {
         deviceRepository.deleteById(id);
+    }
+
+    @Transactional
+    public int deleteAll() {
+        int count = (int) deviceRepository.count();
+        linkRepository.deleteAll();
+        interfaceRepository.deleteAll();
+        deviceRepository.deleteAll();
+        log.info("Reset topologie: sterse {} device-uri, toate link-urile si interfetele", count);
+        return count;
     }
 
     /** Decripteaza parola SSH a unui device - folosit DOAR intern, in motorul de discovery. */

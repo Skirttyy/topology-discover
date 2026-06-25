@@ -67,6 +67,12 @@ public class DiscoveryController {
         return ResponseEntity.accepted().body(Map.of("started", true, "seedDeviceIds", seedDeviceIds));
     }
 
+    @PostMapping("/stop")
+    public ResponseEntity<Map<String, Object>> stopDiscovery() {
+        boolean wasStopped = discoveryEngineService.requestStop();
+        return ResponseEntity.ok(Map.of("stopped", wasStopped));
+    }
+
     @GetMapping("/status")
     public Map<String, Object> getStatus() {
         return discoveryEngineService.getLastRunStatus();

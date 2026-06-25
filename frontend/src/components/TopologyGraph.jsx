@@ -63,6 +63,7 @@ export default function TopologyGraph() {
   const [selectedId, setSelectedId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
+  const [discoveryRunning, setDiscoveryRunning] = useState(false);
 
   // ref cu nodesMap pentru update rapid fara re-layout
   const nodesMapRef = useRef({});
@@ -174,12 +175,14 @@ export default function TopologyGraph() {
         />
       </ReactFlow>
 
-      <DiscoveryControls onScanComplete={loadTopology} onRefresh={loadTopology} />
+      <DiscoveryControls onScanComplete={loadTopology} onRefresh={loadTopology} isRunning={discoveryRunning} />
 
       <DiscoveryStatusBar
         onNodeEvent={handleNodeEvent}
         onLinkEvent={handleLinkEvent}
         onCompleted={loadTopology}
+        onStarted={() => setDiscoveryRunning(true)}
+        onFinished={() => setDiscoveryRunning(false)}
       />
 
       {loading && <Overlay>Se incarca topologia...</Overlay>}
