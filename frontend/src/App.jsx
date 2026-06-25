@@ -315,11 +315,12 @@ export default function App() {
     try {
       const res = await scanSubnet({
         ...form,
-        vendor: 'UNKNOWN',          // auto-detect intotdeauna via SNMP sysDescr
+        vendor: 'UNKNOWN',
         snmpCommunity: form.snmpCommunity || undefined,
         autoStartDiscovery: true,
       });
       setScanRes(res);
+      if (res.discoveryStarted) setRunning(true); // arata Stop imediat, fara sa asteptam WS
     } catch (err) {
       setScanErr(err.response?.data?.error || err.message || 'Eroare');
     } finally {
