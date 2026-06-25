@@ -66,7 +66,7 @@ public class DiscoveryEngineService {
     @Async
     public void runDiscoveryAsync(List<Long> seedDeviceIds) {
         if (running.getAndSet(true)) {
-            log.warn("Discovery deja in curs, ignoram request-ul nou");
+            log.warn("Discovery deja in curs , ignoram request-ul nou");
             return;
         }
         devicesProcessed.set(0);
