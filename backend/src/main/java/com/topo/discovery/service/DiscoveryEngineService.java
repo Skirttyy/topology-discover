@@ -132,7 +132,6 @@ public class DiscoveryEngineService {
         log.info("BFS finalizat. Procesate: {} device-uri", devicesProcessed.get());
     }
 
-    @Transactional
     public List<Device> processDevice(Device device) {
         List<Device> newNeighbors = new ArrayList<>();
         String sshPassword  = deviceService.decryptSshPassword(device);
@@ -263,11 +262,11 @@ public class DiscoveryEngineService {
         if (neighbor.getRemoteSystemName() == null) return null;
         String remoteName = neighbor.getRemoteSystemName().trim();
 
-        // 1. cauta dupa hostname exact
-        Optional<Device> byHostname = deviceRepository.findAll().stream()
-                .filter(d -> remoteName.equalsIgnoreCase(d.getHostname())
-                          || remoteName.equalsIgnoreCase(d.getManagementIp()))
-                .findFirst();
+        // 1. cauta dupa hostname exact sau management IP
+        Optional<Device> byHostname = deviceRepository.findByHostnameIgnoreCase(remoteName);
+        if (byHostname.isEmpty()) {
+            byHostname = deviceRepository.findByManagementIp(remoteName);
+        }
         if (byHostname.isPresent()) return byHostname.get();
 
         // 2. cauta dupa chassis MAC in interfete

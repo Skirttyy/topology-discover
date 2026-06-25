@@ -253,6 +253,7 @@ public class SnmpCollector {
             return null;
         } finally {
             snmp.close();
+            transport.close();
         }
     }
 
@@ -288,6 +289,7 @@ public class SnmpCollector {
             }
         } finally {
             snmp.close();
+            transport.close();
         }
         return results;
     }

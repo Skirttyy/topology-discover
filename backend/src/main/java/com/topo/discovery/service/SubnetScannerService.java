@@ -72,8 +72,12 @@ public class SubnetScannerService {
     /** Expandeaza un CIDR in lista de adrese IP individuale (exclude network/broadcast pentru /24 si mai mici). */
     private List<String> expandCidr(String cidr) {
         String[] parts = cidr.split("/");
+        if (parts.length != 2) throw new IllegalArgumentException("CIDR invalid: " + cidr);
         String baseIp = parts[0];
         int prefixLength = Integer.parseInt(parts[1]);
+        if (prefixLength < 16 || prefixLength > 32) {
+            throw new IllegalArgumentException("Prefix CIDR trebuie sa fie intre /16 si /32, primit: /" + prefixLength);
+        }
 
         long ipAsLong = ipToLong(baseIp);
         long mask = prefixLength == 0 ? 0 : (0xFFFFFFFFL << (32 - prefixLength)) & 0xFFFFFFFFL;

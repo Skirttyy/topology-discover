@@ -15,12 +15,16 @@ import { getTopology } from '../api/client';
 const nodeTypes = { device: DeviceNode };
 
 // layout grid simplu - pozitionare initiala
+const LAYOUT_OFFSET_X = 340; // evita suprapunerea cu panelul DiscoveryControls (latime ~300px + marja)
+const LAYOUT_COL_W   = 280;
+const LAYOUT_ROW_H   = 200;
+
 function layoutNodes(graphNodes) {
   const COLS = Math.max(1, Math.ceil(Math.sqrt(graphNodes.length || 1)));
   return graphNodes.map((node, idx) => ({
     id: node.id,
     type: 'device',
-    position: { x: (idx % COLS) * 260, y: Math.floor(idx / COLS) * 200 },
+    position: { x: LAYOUT_OFFSET_X + (idx % COLS) * LAYOUT_COL_W, y: Math.floor(idx / COLS) * LAYOUT_ROW_H },
     data: {
       label: node.label,
       vendor: node.vendor,
@@ -98,7 +102,7 @@ export default function TopologyGraph() {
         const newNode = {
           id: node.id,
           type: 'device',
-          position: { x: (idx % COLS) * 260, y: Math.floor(idx / COLS) * 200 },
+          position: { x: LAYOUT_OFFSET_X + (idx % COLS) * LAYOUT_COL_W, y: Math.floor(idx / COLS) * LAYOUT_ROW_H },
           data: { ...node, label: node.label || node.managementIp },
           style: { animation: 'nodeAppear 0.5s cubic-bezier(0.34,1.56,0.64,1) forwards' },
         };

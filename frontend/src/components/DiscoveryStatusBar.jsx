@@ -20,8 +20,6 @@ export default function DiscoveryStatusBar({ onNodeEvent, onLinkEvent, onComplet
   }, []);
 
   useEffect(() => {
-    const wsUrl = WS_BASE_URL.replace('https://', 'wss://').replace('http://', 'ws://');
-
     const client = new Client({
       webSocketFactory: () => new SockJS(WS_BASE_URL + '/ws'),
       reconnectDelay: 5000,
