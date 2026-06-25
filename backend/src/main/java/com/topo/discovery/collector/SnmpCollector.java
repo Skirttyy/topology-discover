@@ -138,9 +138,13 @@ public class SnmpCollector {
                 }
 
                 String remoteName = sysNameEntry.value();
-                // prefer portDescr ca e mai lizibil (ex: "ge-0/0/1" in loc de MAC)
+                // prefer portDescr ca e mai lizibil (ex: "ge-0/0/1" in loc de MAC sau index numeric)
                 String remotePort = (remotePortDescr != null && !remotePortDescr.isBlank())
                         ? remotePortDescr : remotePortId;
+
+                // filtram valorile pur numerice (ifIndex brut) — nu sunt utile ca nume de interfata
+                remotePort  = isUsefulPortName(remotePort)  ? remotePort  : null;
+                localPortId = isUsefulPortName(localPortId) ? localPortId : null;
 
                 if (remoteName != null && !remoteName.isBlank()) {
                     neighbors.add(LldpNeighbor.builder()
@@ -252,6 +256,17 @@ public class SnmpCollector {
             log.warn("Interface walk esuat pentru {}: {}", host, e.getMessage());
         }
         return result;
+    }
+
+    /**
+     * Verifica daca un port name LLDP e util pentru afisare.
+     * Filtreaza indexuri SNMP numerice pure ("526", "148") care nu sunt nume de interfata.
+     * LLDP port ID subtype "locally assigned" poate returna indexul ca string.
+     */
+    private boolean isUsefulPortName(String name) {
+        if (name == null || name.isBlank()) return false;
+        // Pur numeric = ifIndex SNMP, nu e un nume de interfata
+        return !name.trim().matches("\\d+");
     }
 
     // ---- Async helper ----

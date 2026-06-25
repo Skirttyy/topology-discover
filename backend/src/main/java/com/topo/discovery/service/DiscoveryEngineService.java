@@ -206,11 +206,20 @@ public class DiscoveryEngineService {
                 log.warn("SNMP sysDescr null pe {} — SNMP posibil neconfigurat sau community gresit",
                         device.getManagementIp());
             } else {
+                // Log sysDescr la INFO ca sa putem diagnostica vendor detection issues
+                log.info("sysDescr de la {}: '{}'", device.getManagementIp(),
+                        sysDescr.substring(0, Math.min(120, sysDescr.length())).replace("\n", " "));
                 device.setSysDescr(sysDescr.length() > 1000 ? sysDescr.substring(0, 1000) : sysDescr);
                 if (device.getVendor() == Vendor.UNKNOWN || device.getVendor() == null) {
                     Vendor detected = Vendor.detect(sysDescr);
-                    device.setVendor(detected);
-                    log.info("Vendor detectat pentru {} din sysDescr: {}", device.getManagementIp(), detected);
+                    if (detected != Vendor.UNKNOWN) {
+                        device.setVendor(detected);
+                        log.info("Vendor detectat pentru {} din sysDescr: {}", device.getManagementIp(), detected);
+                    } else {
+                        log.warn("Vendor nedetectat din sysDescr pe {} — sysDescr: '{}'",
+                                device.getManagementIp(),
+                                sysDescr.substring(0, Math.min(80, sysDescr.length())));
+                    }
                 }
             }
 
@@ -400,14 +409,30 @@ public class DiscoveryEngineService {
             if (info.osVersion() != null) device.setOsVersion(info.osVersion());
             if (info.serialNumber() != null) device.setSerialNumber(info.serialNumber());
 
+            // MikroTik: hostname vine din /system identity print (apel separat),
+            // deoarece JSch exec nu interpreteaza \n ca separator de comenzi.
+            // Facem apelul separat DOAR daca hostname-ul inca nu e setat (nici din SNMP sysName).
+            if (device.getVendor() == Vendor.MIKROTIK && device.getHostname() == null) {
+                try {
+                    String identityOut = sshExecutor.executeCommand(
+                            device.getManagementIp(), SSH_PORT,
+                            device.getSshUsername(), sshPassword,
+                            adapter.getShowHostnameCommand());
+                    VendorAdapter.ParsedVersionInfo idInfo = adapter.parseVersionOutput(identityOut);
+                    if (idInfo.hostname() != null) device.setHostname(idInfo.hostname());
+                } catch (Exception e) {
+                    log.debug("SSH identity esuat pe MikroTik {}: {}", device.getManagementIp(), e.getMessage());
+                }
+            }
+
             log.info("SSH OK {} [{}] -> hostname={} model={} version={}",
                     device.getManagementIp(), device.getVendor(),
-                    info.hostname(), info.model(), info.osVersion());
-            return null; // succes
+                    device.getHostname(), device.getModel(), device.getOsVersion());
+            return null;
 
         } catch (Exception e) {
             log.warn("SSH esuat pe {} [{}]: {}", device.getManagementIp(), device.getVendor(), e.getMessage());
-            return e.getMessage(); // returnam eroarea ca warning non-fatal
+            return e.getMessage();
         }
     }
 

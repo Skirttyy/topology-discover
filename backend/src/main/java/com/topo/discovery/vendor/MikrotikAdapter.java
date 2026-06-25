@@ -32,28 +32,38 @@ public class MikrotikAdapter implements VendorAdapter {
 
     @Override
     public String getShowVersionCommand() {
-        // Combinam identity + resource intr-un singur command SSH
-        // (JSch executa fiecare comanda in propria sesiune, deci facem un singur apel)
-        return "/system identity print\n/system resource print";
+        // Doar resource print — hostname vine din SNMP sysName sau din apel SSH separat
+        // Nu combinam cu \n: JSch exec mode trimite comanda ca string literal,
+        // nu o interpreteaza ca doua comenzi
+        return "/system resource print";
     }
 
     @Override
     public ParsedVersionInfo parseVersionOutput(String raw) {
         if (raw == null || raw.isBlank()) return new ParsedVersionInfo(null, null, null, null);
 
-        // Hostname: "name: MyRouter" din /system identity print
+        // Hostname din /system identity print: "name: MyRouter"
+        // sau din /system identity: poate aparea ca "   name: X"
         String hostname = extract(raw, "(?m)^\\s*name:\\s*(.+)$");
 
-        // Model/platform: "board-name: RB3011UiAS-RM" sau "platform: MikroTik"
+        // Model: "board-name: RB3011UiAS-RM" sau "board-name: CHR" (Cloud Hosted Router)
         String model = extract(raw, "(?m)^\\s*board-name:\\s*(.+)$");
-        if (model == null) model = extract(raw, "(?m)^\\s*platform:\\s*(.+)$");
+        if (model == null) {
+            // Fallback: "platform: MikroTik"
+            String platform = extract(raw, "(?m)^\\s*platform:\\s*(.+)$");
+            if (platform != null) model = "MikroTik " + platform.trim();
+        }
 
-        // Versiune RouterOS: "version: 7.14.3 (stable)"
-        String version = extract(raw, "(?m)^\\s*version:\\s*(\\S+(?:\\s+\\(\\S+\\))?)$");
-        // scurteaza "(stable)" daca e prea lung
-        if (version != null) version = version.replaceAll("\\s*\\(\\w+\\)", "").trim();
+        // Versiune RouterOS: "version: 7.14.3 (stable)" sau "version: 7.14.3"
+        String version = extract(raw, "(?m)^\\s*version:\\s*([\\d\\.]+(?:\\s+\\(\\S+\\))?)$");
+        if (version == null) {
+            // Fallback: extrage prima secventa de versiune
+            version = extract(raw, "(?m)^\\s*version:\\s*(\\S+)$");
+        }
+        // Scoatem "(stable)" din versiune
+        if (version != null) version = version.replaceAll("\\s*\\(\\w+\\)\\s*", "").trim();
 
-        // Serial: nu apare in /system resource, dar unele modele il afiseaza
+        // Serial (disponibil pe RouterBOARD, nu pe CHR)
         String serial = extract(raw, "(?m)^\\s*serial-number:\\s*(\\S+)$");
 
         return new ParsedVersionInfo(hostname, model, version, serial);

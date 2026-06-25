@@ -54,28 +54,35 @@ function mkNode(raw, position) {
   };
 }
 
-// Strip SNMP prefix si curata un port name
-// "529 :: ge-0/0/1" → "ge-0/0/1"
+// Strip prefix SNMP ifIndex: "529 :: ge-0/0/1" → "ge-0/0/1", "526" → "526"
 function stripSnmpPrefix(s) {
   if (!s) return '';
   return s.replace(/^\d+\s*::\s*/, '').trim();
 }
 
-// Extrage cel mai bun nume de interfata, preferand bonding/AE:
-// "LACP-1/2-AE0"  → "ae0"
-// "ae0"           → "ae0"
-// "ge-0/0/1"      → "ge-0/0/1"   (afisam si interfetele fizice)
-// null/""         → null
+// Extrage cel mai bun nume de interfata pentru afisare pe edge.
+// Returneaza null daca valoarea nu e un nume util (ex: index numeric pur).
+//
+// Prioritate:
+//   "LACP-1/2-AE0"  → "ae0"
+//   "ae0"           → "ae0"
+//   "ge-0/0/1"      → "ge-0/0/1"
+//   "526"           → null  (ifIndex brut SNMP — nu e un nume)
+//   null/""         → null
 function bestIfName(s) {
   if (!s) return null;
   const clean = stripSnmpPrefix(s);
   if (!clean) return null;
 
+  // Daca e pur numeric → e un ifIndex SNMP brut, nu un nume de interfata
+  // LLDP subtype "locally assigned" returneaza deseori indexul ca string
+  if (/^\d+$/.test(clean)) return null;
+
   // 1. AE number din LACP descriere: "LACP-1/2-AE0" → "ae0"
   const aeInLacp = clean.match(/\bAE(\d+)\b/i);
   if (aeInLacp) return `ae${aeInLacp[1]}`;
 
-  // 2. AE/bond direct ca intreg string sau la inceput: "ae0", "ae-0/0/0", "bond3", "Po1"
+  // 2. AE/bond direct: "ae0", "ae-0/0/0", "bond3", "Po1", "port-channel2"
   const direct = clean.match(/^(ae[\d\/\-]+|bond\d+|port-channel\d+|po\d+)\b/i);
   if (direct) return direct[1].toLowerCase();
 
@@ -83,15 +90,20 @@ function bestIfName(s) {
   const aeMid = clean.match(/\b(ae\d+)\b/i);
   if (aeMid) return aeMid[1].toLowerCase();
 
-  // 4. LACP/LAG fara nr AE — afisam primele caractere utile
+  // 4. LACP/LAG fara nr AE — afisam primele caractere utile (nu indexul)
   if (/\b(lacp|lag)\b/i.test(clean)) {
     const m = clean.match(/[a-z][\w\/\-]*/i);
-    return m ? (m[0].length > 10 ? m[0].substring(0, 10) : m[0]).toLowerCase() : clean.substring(0, 10);
+    return m ? (m[0].length > 10 ? m[0].substring(0, 10) : m[0]).toLowerCase() : null;
   }
 
   // 5. Interfata fizica normala (ge-0/0/1, xe-0/0/0, eth0, etc.)
-  //    → afisam, dar scurtam la 12 caractere
-  return clean.length > 12 ? clean.substring(0, 12) : clean;
+  //    Verificam ca are cel putin o litera (nu e doar un numar)
+  if (/[a-z]/i.test(clean)) {
+    return clean.length > 12 ? clean.substring(0, 12) : clean;
+  }
+
+  // Altceva numeric/binar — ignoram
+  return null;
 }
 
 function mkEdge(raw) {
@@ -257,7 +269,11 @@ export default function App() {
         const eid = String(p.edge?.id);
         const src = String(p.edge?.source);
         const tgt = String(p.edge?.target);
-        addMsg(`⟷ link ${p.edge?.source} ↔ ${p.edge?.target}`, '#7C8CF8');
+        // afisam interfetele, nu device ID-urile (care sunt numere din DB, fara sens pentru user)
+        const si = bestIfName(p.edge?.sourceInterface);
+        const ti = bestIfName(p.edge?.targetInterface);
+        const linkLabel = (si || ti) ? `${si || '?'} ↔ ${ti || '?'}` : 'link nou';
+        addMsg(`⟷ ${linkLabel}`, '#7C8CF8');
         setEdges(prev => {
           if (!eid) return prev;
           // deduplicare pe pereche (bonding/LAG poate trimite mai multe LINK_DISCOVERED)
