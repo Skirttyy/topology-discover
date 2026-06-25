@@ -13,4 +13,6 @@ public interface LinkRepository extends JpaRepository<Link, Long> {
     List<Link> findByRemoteDevice(Device device);
 
     void deleteByLocalDevice(Device device);
+
+    boolean existsByLocalDeviceAndRemoteDevice(Device localDevice, Device remoteDevice);
 }

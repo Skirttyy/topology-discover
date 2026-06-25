@@ -265,7 +265,11 @@ public class DiscoveryEngineService {
             if (info.osVersion() != null) device.setOsVersion(info.osVersion());
             if (info.serialNumber() != null) device.setSerialNumber(info.serialNumber());
         } catch (Exception e) {
-            log.warn("SSH poll esuat pe {} (non-fatal): {}", device.getManagementIp(), e.getMessage());
+            // SSH fail e non-fatal: continuam cu datele SNMP
+            log.warn("SSH poll esuat pe {} [{}]: {}",
+                    device.getManagementIp(),
+                    device.getVendor(),
+                    e.getMessage());
         }
     }
 
@@ -347,12 +351,24 @@ public class DiscoveryEngineService {
     }
 
     private void createLink(Device localDevice, SnmpCollector.LldpNeighbor neighbor, Device remoteDevice) {
-        // evitam duplicate: acelasi local+remote+localPort
-        boolean exists = linkRepository.findByLocalDevice(localDevice).stream()
-                .anyMatch(l -> l.getRemoteSystemName() != null
-                        && l.getRemoteSystemName().equals(neighbor.getRemoteSystemName())
-                        && Objects.equals(l.getLocalInterfaceName(), neighbor.getLocalPortId()));
-        if (exists) return;
+        // Deduplicare pe PERECHE de device-uri (nu pe port individual).
+        // Cazul bonding/LAG: ge-0/0/1 si ge-0/0/2 duc ambele la spine01 ->
+        // tinem un singur link logic intre core01 si spine01, indiferent de cate porturi fizice.
+        if (remoteDevice != null) {
+            boolean pairExists = linkRepository.existsByLocalDeviceAndRemoteDevice(localDevice, remoteDevice)
+                    || linkRepository.existsByLocalDeviceAndRemoteDevice(remoteDevice, localDevice);
+            if (pairExists) {
+                log.debug("Link deja existent intre {} si {}, skip (bonding/LAG)",
+                        localDevice.getManagementIp(), remoteDevice.getManagementIp());
+                return;
+            }
+        } else {
+            // remoteDevice null: deduplicam dupa (localDevice, remoteSystemName)
+            boolean nameExists = linkRepository.findByLocalDevice(localDevice).stream()
+                    .anyMatch(l -> neighbor.getRemoteSystemName() != null
+                            && neighbor.getRemoteSystemName().equals(l.getRemoteSystemName()));
+            if (nameExists) return;
+        }
 
         Link link = Link.builder()
                 .localDevice(localDevice)

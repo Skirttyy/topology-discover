@@ -68,11 +68,13 @@ public class SshCommandExecutor {
 
             return stdout.toString();
         } catch (JSchException e) {
-            log.warn("SSH eroare catre {}:{} - {}", host, port, e.getMessage());
-            throw new SshExecutionException("SSH esuat catre " + host, e);
+            String msg = e.getMessage() != null ? e.getMessage() : "JSchException fara mesaj";
+            String reason = categorizeSshError(msg);
+            log.warn("SSH [{}] catre {}:{} — {}", reason, host, port, msg);
+            throw new SshExecutionException("SSH " + reason + " catre " + host + ": " + msg, e);
         } catch (Exception e) {
-            log.warn("SSH eroare la executia comenzii pe {}: {}", host, e.getMessage());
-            throw new SshExecutionException("Comanda SSH esuata pe " + host, e);
+            log.warn("SSH eroare IO pe {}:{} — {}", host, port, e.getMessage());
+            throw new SshExecutionException("SSH IO eroare pe " + host, e);
         } finally {
             if (channel != null) channel.disconnect();
             if (session != null) session.disconnect();
@@ -115,6 +117,18 @@ public class SshCommandExecutor {
         session.setTimeout(connectTimeoutMs);
         session.connect(connectTimeoutMs);
         return session;
+    }
+
+    private static String categorizeSshError(String msg) {
+        if (msg == null) return "EROARE_NECUNOSCUTA";
+        String lower = msg.toLowerCase();
+        if (lower.contains("auth") || lower.contains("authentication"))      return "AUTH_FAIL";
+        if (lower.contains("connection refused"))                             return "CONN_REFUSED";
+        if (lower.contains("timeout") || lower.contains("timed out"))        return "TIMEOUT";
+        if (lower.contains("no route") || lower.contains("unreachable"))     return "UNREACHABLE";
+        if (lower.contains("nullpointerexception") || lower.contains("kex")) return "KEX_FAIL";
+        if (lower.contains("algorithm"))                                     return "ALGO_MISMATCH";
+        return "EROARE";
     }
 
     public static class SshExecutionException extends RuntimeException {

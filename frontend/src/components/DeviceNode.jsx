@@ -10,15 +10,17 @@ const STATUS_CONFIG = {
 };
 
 const VENDOR_COLOR = {
-  JUNIPER: '#7C8CF8',
-  ARISTA:  '#F28C4D',
-  UNKNOWN: '#5A6275',
+  JUNIPER:  '#7C8CF8',
+  ARISTA:   '#F28C4D',
+  MIKROTIK: '#FF6B35',
+  UNKNOWN:  '#5A6275',
 };
 
 const VENDOR_ICON = {
-  JUNIPER: 'J',
-  ARISTA:  'A',
-  UNKNOWN: '?',
+  JUNIPER:  'J',
+  ARISTA:   'A',
+  MIKROTIK: 'M',
+  UNKNOWN:  '?',
 };
 
 function DeviceNode({ data, selected }) {
@@ -32,12 +34,13 @@ function DeviceNode({ data, selected }) {
       borderRadius: 10,
       minWidth: 200,
       boxShadow: selected
-        ? '0 0 0 3px rgba(77,157,242,0.25), 0 4px 20px rgba(0,0,0,0.5)'
+        ? '0 0 0 3px rgba(77,157,242,0.25), 0 6px 24px rgba(0,0,0,0.6)'
         : '0 2px 12px rgba(0,0,0,0.4)',
       fontFamily: 'var(--font-ui)',
       overflow: 'hidden',
       cursor: 'pointer',
-      transition: 'all 0.2s ease',
+      transition: 'box-shadow 0.2s ease, border-color 0.2s ease, background 0.15s ease',
+      animation: 'nodeAppear 0.35s cubic-bezier(0.34,1.56,0.64,1) both',
     }}>
       <Handle type="target" position={Position.Top}
         style={{ background: '#353C4A', width: 8, height: 8, border: '2px solid #252A35' }} />

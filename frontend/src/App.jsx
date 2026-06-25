@@ -347,6 +347,7 @@ export default function App() {
                   onChange={e => setForm(f => ({ ...f, vendor: e.target.value }))}>
                   <option value="JUNIPER">Juniper</option>
                   <option value="ARISTA">Arista</option>
+                  <option value="MIKROTIK">MikroTik</option>
                   <option value="UNKNOWN">Auto-detect</option>
                 </select>
               </div>
@@ -421,7 +422,7 @@ export default function App() {
             {/* Mesaje */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
               {messages.map(m => (
-                <div key={m.id} style={{
+                <div key={m.id} className="msg-row" style={{
                   fontFamily: 'JetBrains Mono,monospace', fontSize: 11,
                   color: m.color, padding: '4px 0',
                   borderBottom: '1px solid #1A1F2B',
@@ -450,7 +451,7 @@ export default function App() {
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                 {errors.map(e => (
-                  <div key={e.id} style={{
+                  <div key={e.id} className="err-card" style={{
                     background: 'rgba(242,84,91,0.07)',
                     border: '1px solid rgba(242,84,91,0.2)',
                     borderRadius: 5, padding: '6px 8px',
@@ -510,6 +511,20 @@ export default function App() {
             />
           </ReactFlow>
 
+          {/* Loading bar deasupra canvas-ului */}
+          {(loading || running) && (
+            <div style={{
+              position: 'absolute', top: 0, left: 0, right: 0,
+              height: 2, zIndex: 20, overflow: 'hidden',
+            }}>
+              <div style={{
+                height: '100%',
+                background: running ? '#3DDC84' : '#4D9DF2',
+                animation: 'loadbar 1.6s ease-in-out infinite',
+              }} />
+            </div>
+          )}
+
           {/* Overlay-uri */}
           {loading && <CanvasMsg>Se incarca topologia...</CanvasMsg>}
           {topoErr && !loading && <CanvasMsg error>Eroare: {topoErr}</CanvasMsg>}
@@ -527,8 +542,24 @@ export default function App() {
       <style>{`
         @keyframes pulse {
           0%, 100% { opacity: 1; }
-          50% { opacity: 0.3; }
+          50% { opacity: 0.25; }
         }
+        @keyframes loadbar {
+          0%   { transform: translateX(-100%); width: 40%; }
+          50%  { transform: translateX(80%);  width: 60%; }
+          100% { transform: translateX(200%); width: 40%; }
+        }
+        @keyframes nodeAppear {
+          0%   { opacity: 0; transform: scale(0.6) translateY(12px); }
+          70%  { opacity: 1; transform: scale(1.04) translateY(-2px); }
+          100% { opacity: 1; transform: scale(1) translateY(0); }
+        }
+        @keyframes fadeSlideIn {
+          from { opacity: 0; transform: translateY(6px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        .msg-row { animation: fadeSlideIn 0.25s ease both; }
+        .err-card { animation: fadeSlideIn 0.2s ease both; }
       `}</style>
     </div>
   );
