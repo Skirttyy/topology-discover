@@ -21,108 +21,122 @@ const edgeTypes = { labeled: LabeledEdge };
 const NW = 224, NH = 108;
 
 // ─── Detectie rol in topologie dupa conventii de naming ─────────────────────
-const ROLE_RANK = { internet: 0, wan: 0, tunnel: 0, firewall: 0, core: 1, border: 1, dist: 2, spine: 2, agg: 2, leaf: 3, access: 3, edge: 3, placeholder: 5 };
+// Ordinea conteaza: keywords mai specifice mai intai
+const ROLE_KEYWORDS = [
+  ['internet', 0], ['wan',      0], ['tunnel',   0], ['firewall',  0], ['fw', 0], ['uplink', 0],
+  ['core',     1], ['border',   1], ['gw',        1], ['gateway',   1],
+  ['spine',    2], ['dist',     2], ['agg',        2],
+  ['leaf',     3], ['access',   3], ['tor',        3], ['sw',        3],
+  ['server',   4], ['host',     4], ['pc',         4],
+];
 
+/**
+ * Detecteaza rank-ul unui nod din label/model/vendor.
+ * Returneaza null pentru placeholder-uri cu rol necunoscut
+ * (vor fi rezolvate in functie de vecinii lor).
+ */
 function detectNodeRank(node) {
-  const label = (node.data?.label || '').toLowerCase();
-  const model = (node.data?.model || '').toLowerCase();
-  const ip    = (node.data?.managementIp || '').toLowerCase();
+  const label  = (node.data?.label || '').toLowerCase();
+  const model  = (node.data?.model || '').toLowerCase();
+  const ip     = (node.data?.managementIp || '').toLowerCase();
   const vendor = node.data?.vendor || 'UNKNOWN';
 
-  if (ip.startsWith('lldp:')) return 5; // placeholder
+  // Construim un string de cautare care include atat label cat si ip fara prefix lldp:
+  // Astfel "lldp:wan01-node.ch.md" contribuie "wan01-node.ch.md" la cautare
+  const cleanIp   = ip.replace(/^lldp:/, '');
+  const searchStr = `${label} ${cleanIp}`; // ex: "wan01-node.ch.md lldp:wan01-node.ch.md"
 
-  for (const [keyword, rank] of Object.entries(ROLE_RANK)) {
-    if (label.includes(keyword)) return rank;
+  // Verificam keywords (valabil pentru orice nod, inclusiv placeholder)
+  for (const [kw, rank] of ROLE_KEYWORDS) {
+    if (searchStr.includes(kw)) return rank;
   }
 
-  // detectie din model
-  if (model.includes('vmx') || model.includes('-mx') || model.includes('ptx')) return 1; // core/router
-  if (model.includes('qfx') || model.includes('ex') || model.includes('arista')) return 3; // switch/leaf
-  if (vendor === 'MIKROTIK') return 0; // de obicei edge/WAN
+  // Placeholder cu rol nedetectabil — rank calculat din vecini in pasul 2
+  if (ip.startsWith('lldp:')) return null;
 
-  return 4; // necunoscut
+  // Detectie din model pentru device-uri reale fara keyword in hostname
+  if (model.includes('vmx') || model.includes('-mx') || model.includes('ptx')) return 1;
+  if (model.includes('qfx') || model.includes('ex') || model.includes('arista')) return 3;
+  if (vendor === 'MIKROTIK') return 0;
+
+  return 4; // necunoscut dar real
 }
 
-// Layout ierarhic piramidal: grupeaza nodurile pe niveluri (rank),
-// spatieaza uniform in cadrul fiecarui nivel
+/**
+ * Layout ierarhic piramidal in doua pasuri:
+ *
+ * Pasul 1: Asignam rank-uri nodurilor cu rol detectabil (din label/model/vendor).
+ * Pasul 2: Placeholder-urile cu rol necunoscut primesc rank = min(rank vecini) - 1
+ *          (presupunem ca e un device upstream/WAN fata de cel care l-a descoperit).
+ *          Daca nu au vecini cunoscuti, merg la nivelul cel mai de sus + 1.
+ */
 function hierarchicalLayout(nodes, edges) {
   if (!nodes.length) return nodes;
 
-  const LEVEL_HEIGHT = 180;
-  const NODE_GAP     = 60;
+  const LEVEL_HEIGHT = 185;
+  const NODE_GAP     = 65;
   const START_Y      = 60;
 
-  // Grupeaza pe rank
+  // ── Pasul 1: rank-uri din detectie directa ──────────────────────────────
+  const rankMap = new Map();
+  nodes.forEach(n => {
+    const r = detectNodeRank(n);
+    if (r !== null) rankMap.set(n.id, r);
+  });
+
+  // ── Pasul 2: rank-uri pentru placeholder-uri fara rol detectat ──────────
+  nodes.forEach(n => {
+    if (rankMap.has(n.id)) return;
+
+    // gasim rank-urile vecinilor deja rezolvati
+    const neighborRanks = edges
+      .filter(e => e.source === n.id || e.target === n.id)
+      .map(e => rankMap.get(e.source === n.id ? e.target : e.source))
+      .filter(r => r !== undefined && r !== null);
+
+    if (neighborRanks.length > 0) {
+      // Plasam placeholder-ul un nivel DEASUPRA vecinului cu cel mai mic rank.
+      // Rationale: placeholder-ul a fost descoperit prin LLDP de catre acel vecin,
+      // deci e probabil un device upstream (WAN, core deasupra unui spine, etc.)
+      const minNeighborRank = Math.min(...neighborRanks);
+      rankMap.set(n.id, Math.max(0, minNeighborRank - 1));
+    } else {
+      // Placeholder complet izolat (fara edges) — sus (rank 0)
+      rankMap.set(n.id, 0);
+    }
+  });
+
+  // ── Grupare pe nivel si pozitionare ─────────────────────────────────────
   const byRank = new Map();
   nodes.forEach(n => {
-    const rank = detectNodeRank(n);
-    if (!byRank.has(rank)) byRank.set(rank, []);
-    byRank.get(rank).push(n);
+    const r = rankMap.get(n.id) ?? 4;
+    if (!byRank.has(r)) byRank.set(r, []);
+    byRank.get(r).push(n);
   });
 
-  // Sorteaza nivelurile
   const sortedRanks = [...byRank.keys()].sort((a, b) => a - b);
 
-  // Calculeaza latimea maxima pentru centrare
-  let maxLevelWidth = 0;
-  byRank.forEach(levelNodes => {
-    const w = levelNodes.length * (NW + NODE_GAP) - NODE_GAP;
-    if (w > maxLevelWidth) maxLevelWidth = w;
-  });
+  // Latimea maxima a unui nivel (pentru centrare)
+  let maxW = 0;
+  byRank.forEach(lvl => { const w = lvl.length * (NW + NODE_GAP) - NODE_GAP; if (w > maxW) maxW = w; });
 
   const result = [];
   sortedRanks.forEach((rank, levelIdx) => {
-    const levelNodes = byRank.get(rank);
-    const levelWidth = levelNodes.length * (NW + NODE_GAP) - NODE_GAP;
-    const startX = (maxLevelWidth - levelWidth) / 2 + 80;
-    const y = START_Y + levelIdx * LEVEL_HEIGHT;
+    const lvl    = byRank.get(rank);
+    const lvlW   = lvl.length * (NW + NODE_GAP) - NODE_GAP;
+    const startX = (maxW - lvlW) / 2 + 80;
+    const y      = START_Y + levelIdx * LEVEL_HEIGHT;
 
-    levelNodes.forEach((n, i) => {
-      result.push({
-        ...n,
-        position: { x: startX + i * (NW + NODE_GAP), y },
-      });
+    lvl.forEach((n, i) => {
+      result.push({ ...n, position: { x: startX + i * (NW + NODE_GAP), y } });
     });
   });
 
   return result;
 }
 
-// Aplica layout ierarhic + fallback dagre pentru grafuri complexe
-function dagreLayout(nodes, edges) {
-  if (!nodes.length) return nodes;
-
-  // Incercam intai layout ierarhic bazat pe conventii de naming
-  const hierarchical = hierarchicalLayout(nodes, edges);
-
-  // Verificam daca layout-ul ierarhic e util (cel putin 2 niveluri diferite)
-  const ranks = new Set(nodes.map(n => detectNodeRank(n)));
-  if (ranks.size >= 2) {
-    return hierarchical; // avem ierarhie clara — folosim layout-ul semantic
-  }
-
-  // Fallback: dagre pentru grafuri fara ierarhie clara
-  const g = new dagre.graphlib.Graph();
-  g.setDefaultEdgeLabel(() => ({}));
-  g.setGraph({ rankdir: 'TB', ranker: 'tight-tree', nodesep: 100, ranksep: 150, marginx: 60, marginy: 60 });
-
-  nodes.forEach(n => g.setNode(n.id, { width: NW, height: NH }));
-  const ids = new Set(nodes.map(n => n.id));
-  edges.forEach(e => {
-    if (ids.has(e.source) && ids.has(e.target) && e.source !== e.target) g.setEdge(e.source, e.target);
-  });
-  dagre.layout(g);
-
-  const allY = nodes.map(n => { const p = g.node(n.id); return p ? p.y : 0; }).filter(isFinite);
-  const maxY = allY.length ? Math.max(0, ...allY) : 0;
-  let isoX = 60;
-
-  return nodes.map(n => {
-    const p = g.node(n.id);
-    if (!p) { const pos = { x: isoX, y: maxY + 200 }; isoX += NW + 40; return { ...n, position: pos }; }
-    return { ...n, position: { x: p.x - NW / 2, y: p.y - NH / 2 } };
-  });
-}
+// dagreLayout e aliasul public al hierarchicalLayout
+const dagreLayout = hierarchicalLayout;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 function mkNode(raw, position) {
