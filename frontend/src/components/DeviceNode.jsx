@@ -241,7 +241,7 @@ function DeviceNode({ data, selected }) {
         : `0 2px 12px rgba(0,0,0,0.4)`,
       cursor: 'pointer', fontFamily: 'var(--font-ui)',
       transition: 'box-shadow 0.2s, border-color 0.2s',
-      animation: 'nodeAppear 0.35s cubic-bezier(0.34,1.56,0.64,1) both',
+      animation: 'nodeAppear 0.4s cubic-bezier(0.34,1.56,0.64,1) both',
     }}>
       <Handle type="target" position={Position.Top}    style={H} />
       <Handle type="source" position={Position.Bottom} style={H} />

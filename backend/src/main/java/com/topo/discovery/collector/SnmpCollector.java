@@ -109,19 +109,12 @@ public class SnmpCollector {
             CompletableFuture<List<SnmpEntry>> chassisF   = walkAsync(host, community, OID_LLDP_REM_CHASSIS_ID);
             CompletableFuture<List<SnmpEntry>> locPortF   = walkAsync(host, community, OID_LLDP_LOC_PORT_ID);
 
-            List<CompletableFuture<?>> lldpFutures = List.of(sysNameF, portIdF, portDescrF, chassisF, locPortF);
-            List<SnmpEntry> sysNames, portIds, portDescrs, chassisIds, locPorts;
-            try {
-                sysNames   = sysNameF.get(timeoutSec, TimeUnit.SECONDS);
-                portIds    = portIdF.get(timeoutSec, TimeUnit.SECONDS);
-                portDescrs = portDescrF.get(timeoutSec, TimeUnit.SECONDS);
-                chassisIds = chassisF.get(timeoutSec, TimeUnit.SECONDS);
-                locPorts   = locPortF.get(timeoutSec, TimeUnit.SECONDS);
-            } catch (TimeoutException e) {
-                lldpFutures.forEach(f -> f.cancel(true));
-                log.warn("LLDP walk timeout pentru {}", host);
-                return neighbors;
-            }
+            // safeGet gestioneaza InterruptedException, TimeoutException, ExecutionException
+            List<SnmpEntry> sysNames   = safeGet(sysNameF,   timeoutSec);
+            List<SnmpEntry> portIds    = safeGet(portIdF,     timeoutSec);
+            List<SnmpEntry> portDescrs = safeGet(portDescrF,  timeoutSec);
+            List<SnmpEntry> chassisIds = safeGet(chassisF,    timeoutSec);
+            List<SnmpEntry> locPorts   = safeGet(locPortF,    timeoutSec);
 
             // indexul LLDP e: <timeMark>.<localPortNum>.<remoteIndex>
             // ne intereseaza localPortNum ca sa stim prin ce port local vedem vecinul
@@ -203,47 +196,42 @@ public class SnmpCollector {
     public List<InterfaceEntry> walkInterfaces(String host, String community) {
         List<InterfaceEntry> result = new ArrayList<>();
         try {
-            // Toate walk-urile IF-MIB sunt independente — le rulam in paralel
             int timeoutSec = (timeoutMs * 2) / 1000 + 5;
-            CompletableFuture<List<SnmpEntry>> descrF   = walkAsync(host, community, OID_IF_DESCR);
-            CompletableFuture<List<SnmpEntry>> macF     = walkAsync(host, community, OID_IF_PHYS_ADDR);
-            CompletableFuture<List<SnmpEntry>> adminF   = walkAsync(host, community, OID_IF_ADMIN_STATUS);
-            CompletableFuture<List<SnmpEntry>> operF    = walkAsync(host, community, OID_IF_OPER_STATUS);
-            CompletableFuture<List<SnmpEntry>> speedF   = walkAsync(host, community, OID_IF_SPEED);
-            CompletableFuture<List<SnmpEntry>> aliasF   = walkAsync(host, community, OID_IF_ALIAS);
-            CompletableFuture<List<SnmpEntry>> ipIdxF   = walkAsync(host, community, OID_IP_ADDR_IFINDEX);
-            CompletableFuture<List<SnmpEntry>> ipMaskF  = walkAsync(host, community, OID_IP_ADDR_NETMASK);
 
-            List<CompletableFuture<?>> ifFutures = List.of(descrF, macF, adminF, operF, speedF, aliasF, ipIdxF, ipMaskF);
-            List<SnmpEntry> descrs, macs, adminSts, operSts, speeds, aliases;
-            try {
-                descrs   = descrF.get(timeoutSec, TimeUnit.SECONDS);
-                macs     = macF.get(timeoutSec, TimeUnit.SECONDS);
-                adminSts = adminF.get(timeoutSec, TimeUnit.SECONDS);
-                operSts  = operF.get(timeoutSec, TimeUnit.SECONDS);
-                speeds   = speedF.get(timeoutSec, TimeUnit.SECONDS);
-                aliases  = aliasF.get(timeoutSec, TimeUnit.SECONDS);
-            } catch (TimeoutException e) {
-                ifFutures.forEach(f -> f.cancel(true));
-                log.warn("IF-MIB walk timeout pentru {}", host);
+            // Lansam toate walk-urile IF-MIB in paralel
+            CompletableFuture<List<SnmpEntry>> descrF  = walkAsync(host, community, OID_IF_DESCR);
+            CompletableFuture<List<SnmpEntry>> macF    = walkAsync(host, community, OID_IF_PHYS_ADDR);
+            CompletableFuture<List<SnmpEntry>> adminF  = walkAsync(host, community, OID_IF_ADMIN_STATUS);
+            CompletableFuture<List<SnmpEntry>> operF   = walkAsync(host, community, OID_IF_OPER_STATUS);
+            CompletableFuture<List<SnmpEntry>> speedF  = walkAsync(host, community, OID_IF_SPEED);
+            CompletableFuture<List<SnmpEntry>> aliasF  = walkAsync(host, community, OID_IF_ALIAS);
+            CompletableFuture<List<SnmpEntry>> ipIdxF  = walkAsync(host, community, OID_IP_ADDR_IFINDEX);
+            CompletableFuture<List<SnmpEntry>> ipMaskF = walkAsync(host, community, OID_IP_ADDR_NETMASK);
+
+            // safeGet nu arunca niciodata exceptie (gestioneaza InterruptedException, Timeout, etc.)
+            List<SnmpEntry> descrs   = safeGet(descrF,  timeoutSec);
+            List<SnmpEntry> macs     = safeGet(macF,    timeoutSec);
+            List<SnmpEntry> adminSts = safeGet(adminF,  timeoutSec);
+            List<SnmpEntry> operSts  = safeGet(operF,   timeoutSec);
+            List<SnmpEntry> speeds   = safeGet(speedF,  timeoutSec);
+            List<SnmpEntry> aliases  = safeGet(aliasF,  timeoutSec);
+            List<SnmpEntry> ipIfIdx  = safeGet(ipIdxF,  timeoutSec);
+            List<SnmpEntry> ipMasks  = safeGet(ipMaskF, timeoutSec);
+
+            if (descrs.isEmpty()) {
+                log.debug("IF-MIB walk: nicio interfata returnata de {}", host);
                 return result;
             }
 
             // IP addresses per ifIndex
             Map<String, String> ifIndexToIp      = new HashMap<>();
             Map<String, String> ifIndexToNetmask = new HashMap<>();
-            try {
-                List<SnmpEntry> ipIfIndex = ipIdxF.get(timeoutSec, TimeUnit.SECONDS);
-                List<SnmpEntry> ipNetmask = ipMaskF.get(timeoutSec, TimeUnit.SECONDS);
-                for (SnmpEntry e : ipIfIndex) {
-                    String ipSuffix = stripPrefix(e.oid(), OID_IP_ADDR_IFINDEX);
-                    ifIndexToIp.put(e.value(), ipSuffix);
-                }
-                for (SnmpEntry e : ipNetmask) {
-                    String ipSuffix = stripPrefix(e.oid(), OID_IP_ADDR_NETMASK);
-                    ifIndexToNetmask.put(ipSuffix, e.value());
-                }
-            } catch (Exception ignored) {}
+            for (SnmpEntry e : ipIfIdx) {
+                ifIndexToIp.put(e.value(), stripPrefix(e.oid(), OID_IP_ADDR_IFINDEX));
+            }
+            for (SnmpEntry e : ipMasks) {
+                ifIndexToNetmask.put(stripPrefix(e.oid(), OID_IP_ADDR_NETMASK), e.value());
+            }
 
             for (SnmpEntry descr : descrs) {
                 String ifIndex = stripPrefix(descr.oid(), OID_IF_DESCR);
@@ -286,7 +274,7 @@ public class SnmpCollector {
         return !name.trim().matches("\\d+");
     }
 
-    // ---- Async helper ----
+    // ---- Async helpers ----
 
     /** Ruleaza un SNMP walk asincron pe ForkJoinPool.commonPool(). */
     private CompletableFuture<List<SnmpEntry>> walkAsync(String host, String community, String baseOid) {
@@ -295,9 +283,29 @@ public class SnmpCollector {
                 return walk(host, community, baseOid);
             } catch (Exception e) {
                 log.debug("walkAsync esuat {}/{}: {}", host, baseOid, e.getMessage());
-                return List.of();
+                return List.<SnmpEntry>of();
             }
         });
+    }
+
+    /**
+     * Get sigur pe un CompletableFuture — NICIODATA nu arunca exceptie.
+     * Gestioneaza InterruptedException (restaureaza flag-ul de interrupt),
+     * TimeoutException (canceleaza future-ul) si orice alta exceptie.
+     */
+    private List<SnmpEntry> safeGet(CompletableFuture<List<SnmpEntry>> future, int timeoutSec) {
+        try {
+            return future.get(timeoutSec, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt(); // restauram flag-ul de interrupt
+            future.cancel(true);
+            return List.of();
+        } catch (TimeoutException e) {
+            future.cancel(true);
+            return List.of();
+        } catch (Exception e) {
+            return List.of();
+        }
     }
 
     // ---- Private helpers ----

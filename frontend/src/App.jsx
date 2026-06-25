@@ -9,11 +9,13 @@ import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
 
 import DeviceNode from './components/DeviceNode';
+import LabeledEdge from './components/LabeledEdge';
 import DeviceDetailsPanel from './components/DeviceDetailsPanel';
 import { getTopology, scanSubnet, stopDiscovery, resetTopology, getDiscoveryStatus, WS_BASE_URL } from './api/client';
 
-// ─── React Flow node type ───────────────────────────────────────────────────
+// ─── React Flow types ───────────────────────────────────────────────────────
 const nodeTypes = { device: DeviceNode };
+const edgeTypes = { labeled: LabeledEdge };
 
 // ─── Dagre layout ───────────────────────────────────────────────────────────
 const NW = 224, NH = 108;
@@ -137,25 +139,13 @@ function bestIfName(s) {
 function mkEdge(raw) {
   const si = bestIfName(raw.sourceInterface);
   const ti = bestIfName(raw.targetInterface);
-
-  // Label: aratam ambele capete daca avem informatii
-  // Daca lipseste una dintre parti nu punem '?' — omitem acel capat
-  let label;
-  if (si && ti) label = `${si} ↔ ${ti}`;
-  else if (si)  label = si;
-  else if (ti)  label = ti;
-  else          label = undefined;
   return {
     id:     String(raw.id),
     source: String(raw.source),
     target: String(raw.target),
-    type:   'default',           // bezier curve — mai organic decat smoothstep
-    label,
-    labelStyle:   { fill: '#8B93A3', fontSize: 11, fontFamily: 'JetBrains Mono,monospace', fontWeight: 600 },
-    labelBgStyle: { fill: '#0B0E14', fillOpacity: 0.9 },
-    labelBgPadding: [4, 6],
-    labelBgBorderRadius: 4,
-    style: { stroke: '#3DDC84', strokeWidth: 1.6 },
+    type:   'labeled',           // custom edge cu label-uri la fiecare capat
+    data:   { sourceLabel: si || null, targetLabel: ti || null },
+    style:  { stroke: '#3DDC84', strokeWidth: 1.6 },
     animated: false,
   };
 }
@@ -638,6 +628,7 @@ export default function App() {
             onPaneClick={() => { setSelectedId(null); setConfirmReset(false); }}
             onNodeDragStop={onNodeDragStop}
             nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
             onInit={inst => { rfRef.current = inst; }}
             fitView
             fitViewOptions={{ padding: 0.12 }}
@@ -694,24 +685,31 @@ export default function App() {
       <style>{`
         @keyframes pulse {
           0%, 100% { opacity: 1; }
-          50% { opacity: 0.25; }
+          50%      { opacity: 0.25; }
         }
         @keyframes loadbar {
           0%   { transform: translateX(-100%); width: 40%; }
-          50%  { transform: translateX(80%);  width: 60%; }
-          100% { transform: translateX(200%); width: 40%; }
+          50%  { transform: translateX(80%);   width: 60%; }
+          100% { transform: translateX(200%);  width: 40%; }
         }
         @keyframes nodeAppear {
-          0%   { opacity: 0; transform: scale(0.6) translateY(12px); }
-          70%  { opacity: 1; transform: scale(1.04) translateY(-2px); }
-          100% { opacity: 1; transform: scale(1) translateY(0); }
+          0%   { opacity: 0; transform: scale(0.55) translateY(16px); }
+          65%  { opacity: 1; transform: scale(1.03) translateY(-3px); }
+          100% { opacity: 1; transform: scale(1)    translateY(0);    }
         }
         @keyframes fadeSlideIn {
-          from { opacity: 0; transform: translateY(6px); }
-          to   { opacity: 1; transform: translateY(0); }
+          from { opacity: 0; transform: translateY(5px); }
+          to   { opacity: 1; transform: translateY(0);   }
         }
-        .msg-row { animation: fadeSlideIn 0.25s ease both; }
-        .err-card { animation: fadeSlideIn 0.2s ease both; }
+        @keyframes dashmove {
+          from { stroke-dashoffset: 20; }
+          to   { stroke-dashoffset: 0;  }
+        }
+        /* Tranzitie lina la re-layout */
+        .react-flow__node { transition: transform 0.35s cubic-bezier(0.4,0,0.2,1); }
+        .react-flow__node.selected { transition: none; }
+        .msg-row  { animation: fadeSlideIn 0.22s ease both; }
+        .err-card { animation: fadeSlideIn 0.18s ease both; }
       `}</style>
     </div>
   );
