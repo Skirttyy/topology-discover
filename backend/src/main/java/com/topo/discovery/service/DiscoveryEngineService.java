@@ -226,7 +226,11 @@ public class DiscoveryEngineService {
             for (SnmpCollector.LldpNeighbor neighbor : lldpNeighbors) {
                 Device neighborDevice = resolveOrCreateNeighbor(neighbor, device, sshPassword, snmpCommunity);
                 createLink(device, neighbor, neighborDevice);
-                if (neighborDevice != null && neighborDevice.getStatus() == DeviceStatus.DISCOVERED) {
+                // Adaugam in BFS doar daca e un IP real, nu un placeholder lldp:*
+                // Placeholder-urile nu au IP valid si SNMP/SSH vor esua garantat
+                if (neighborDevice != null
+                        && neighborDevice.getStatus() == DeviceStatus.DISCOVERED
+                        && !neighborDevice.getManagementIp().startsWith("lldp:")) {
                     newNeighbors.add(neighborDevice);
                 }
             }
