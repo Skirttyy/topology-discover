@@ -51,7 +51,8 @@ function dagreLayout(nodes, edges) {
 
   // Nodurile la pozitia (0,0) n-au primit pozitie de la dagre (izolate)
   let isoX = 60;
-  let maxY = Math.max(...laid.map(n => n.position.y), 0);
+  const allY = laid.map(n => n.position?.y).filter(y => typeof y === 'number' && isFinite(y));
+  const maxY = allY.length > 0 ? Math.max(0, ...allY) : 0;
   return laid.map(n => {
     if (n.position.x === -NW / 2 && n.position.y === -NH / 2) {
       const pos = { x: isoX, y: maxY + 200 };
@@ -216,9 +217,14 @@ export default function App() {
   }, [fitView]);
 
   // Spring-back: cand userul elibereaza un nod, il animam inapoi la pozitia dagre
+  // Retinem frame ID pentru cleanup (evita memory leak daca nodul e sters in timpul animatiei)
+  const animFrames = useRef({});
   const onNodeDragStop = useCallback((_, node) => {
     const home = homePositions.current[node.id];
     if (!home) return;
+
+    // Anuleaza animatia anterioara pe acelasi nod (daca exista)
+    if (animFrames.current[node.id]) cancelAnimationFrame(animFrames.current[node.id]);
 
     const startX = node.position.x;
     const startY = node.position.y;
@@ -227,15 +233,19 @@ export default function App() {
 
     const step = (now) => {
       const t    = Math.min((now - startTime) / duration, 1);
-      const ease = 1 - Math.pow(1 - t, 3); // ease-out cubic
+      const ease = 1 - Math.pow(1 - t, 3);
       setNodes(prev => prev.map(n =>
         n.id === node.id
           ? { ...n, position: { x: startX + (home.x - startX) * ease, y: startY + (home.y - startY) * ease } }
           : n
       ));
-      if (t < 1) requestAnimationFrame(step);
+      if (t < 1) {
+        animFrames.current[node.id] = requestAnimationFrame(step);
+      } else {
+        delete animFrames.current[node.id];
+      }
     };
-    requestAnimationFrame(step);
+    animFrames.current[node.id] = requestAnimationFrame(step);
   }, [setNodes]);
 
   // ── Load topology ────────────────────────────────────────────────────────
@@ -371,8 +381,10 @@ export default function App() {
         snmpCommunity: form.snmpCommunity || undefined,
         autoStartDiscovery: true,
       });
-      setScanRes(res);
-      if (res.discoveryStarted) setRunning(true); // arata Stop imediat, fara sa asteptam WS
+      if (res) {
+        setScanRes(res);
+        if (res.discoveryStarted) setRunning(true);
+      }
     } catch (err) {
       setScanErr(err.response?.data?.error || err.message || 'Eroare');
     } finally {
@@ -450,7 +462,14 @@ export default function App() {
             <Btn
               color={formOpen ? '#252A35' : '#3DDC84'}
               text={formOpen ? '#8B93A3' : '#0B0E14'}
-              onClick={() => { setFormOpen(o => !o); setConfirmReset(false); setScanRes(null); setScanErr(null); }}
+              onClick={() => {
+                setFormOpen(o => !o);
+                setConfirmReset(false);
+                setScanRes(null);
+                setScanErr(null);
+                // reset form cand se inchide (nu lasam parola vizibila la redeschidere)
+                if (formOpen) setForm(f => ({ ...f, sshPassword: '', snmpCommunity: '' }));
+              }}
             >
               {formOpen ? '✕ Inchide' : '+ Scan subnet'}
             </Btn>

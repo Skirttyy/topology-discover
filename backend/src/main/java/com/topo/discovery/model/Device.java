@@ -75,8 +75,7 @@ public class Device {
 
     @PrePersist
     protected void onCreate() {
-        if (firstDiscoveredAt == null) {
-            firstDiscoveredAt = LocalDateTime.now();
-        }
+        if (firstDiscoveredAt == null) firstDiscoveredAt = LocalDateTime.now();
+        if (status == null) status = DeviceStatus.DISCOVERED;
     }
 }

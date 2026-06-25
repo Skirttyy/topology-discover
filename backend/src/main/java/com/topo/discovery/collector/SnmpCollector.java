@@ -18,6 +18,7 @@ import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Colecteaza date prin SNMP v2c folosind MIB-uri standard.
@@ -108,11 +109,19 @@ public class SnmpCollector {
             CompletableFuture<List<SnmpEntry>> chassisF   = walkAsync(host, community, OID_LLDP_REM_CHASSIS_ID);
             CompletableFuture<List<SnmpEntry>> locPortF   = walkAsync(host, community, OID_LLDP_LOC_PORT_ID);
 
-            List<SnmpEntry> sysNames   = sysNameF.get(timeoutSec, TimeUnit.SECONDS);
-            List<SnmpEntry> portIds    = portIdF.get(timeoutSec, TimeUnit.SECONDS);
-            List<SnmpEntry> portDescrs = portDescrF.get(timeoutSec, TimeUnit.SECONDS);
-            List<SnmpEntry> chassisIds = chassisF.get(timeoutSec, TimeUnit.SECONDS);
-            List<SnmpEntry> locPorts   = locPortF.get(timeoutSec, TimeUnit.SECONDS);
+            List<CompletableFuture<?>> lldpFutures = List.of(sysNameF, portIdF, portDescrF, chassisF, locPortF);
+            List<SnmpEntry> sysNames, portIds, portDescrs, chassisIds, locPorts;
+            try {
+                sysNames   = sysNameF.get(timeoutSec, TimeUnit.SECONDS);
+                portIds    = portIdF.get(timeoutSec, TimeUnit.SECONDS);
+                portDescrs = portDescrF.get(timeoutSec, TimeUnit.SECONDS);
+                chassisIds = chassisF.get(timeoutSec, TimeUnit.SECONDS);
+                locPorts   = locPortF.get(timeoutSec, TimeUnit.SECONDS);
+            } catch (TimeoutException e) {
+                lldpFutures.forEach(f -> f.cancel(true));
+                log.warn("LLDP walk timeout pentru {}", host);
+                return neighbors;
+            }
 
             // indexul LLDP e: <timeMark>.<localPortNum>.<remoteIndex>
             // ne intereseaza localPortNum ca sa stim prin ce port local vedem vecinul
@@ -205,12 +214,20 @@ public class SnmpCollector {
             CompletableFuture<List<SnmpEntry>> ipIdxF   = walkAsync(host, community, OID_IP_ADDR_IFINDEX);
             CompletableFuture<List<SnmpEntry>> ipMaskF  = walkAsync(host, community, OID_IP_ADDR_NETMASK);
 
-            List<SnmpEntry> descrs   = descrF.get(timeoutSec, TimeUnit.SECONDS);
-            List<SnmpEntry> macs     = macF.get(timeoutSec, TimeUnit.SECONDS);
-            List<SnmpEntry> adminSts = adminF.get(timeoutSec, TimeUnit.SECONDS);
-            List<SnmpEntry> operSts  = operF.get(timeoutSec, TimeUnit.SECONDS);
-            List<SnmpEntry> speeds   = speedF.get(timeoutSec, TimeUnit.SECONDS);
-            List<SnmpEntry> aliases  = aliasF.get(timeoutSec, TimeUnit.SECONDS);
+            List<CompletableFuture<?>> ifFutures = List.of(descrF, macF, adminF, operF, speedF, aliasF, ipIdxF, ipMaskF);
+            List<SnmpEntry> descrs, macs, adminSts, operSts, speeds, aliases;
+            try {
+                descrs   = descrF.get(timeoutSec, TimeUnit.SECONDS);
+                macs     = macF.get(timeoutSec, TimeUnit.SECONDS);
+                adminSts = adminF.get(timeoutSec, TimeUnit.SECONDS);
+                operSts  = operF.get(timeoutSec, TimeUnit.SECONDS);
+                speeds   = speedF.get(timeoutSec, TimeUnit.SECONDS);
+                aliases  = aliasF.get(timeoutSec, TimeUnit.SECONDS);
+            } catch (TimeoutException e) {
+                ifFutures.forEach(f -> f.cancel(true));
+                log.warn("IF-MIB walk timeout pentru {}", host);
+                return result;
+            }
 
             // IP addresses per ifIndex
             Map<String, String> ifIndexToIp      = new HashMap<>();

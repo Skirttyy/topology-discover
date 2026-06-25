@@ -79,7 +79,7 @@ public class DiscoveryEngineService {
     @Async
     public void runDiscoveryAsync(List<Long> seedDeviceIds) {
         if (running.getAndSet(true)) {
-            log.warn("Discovery deja in curs , ignoram request-ul nou");
+            log.warn("Discovery deja in curs, ignoram request-ul nou");
             return;
         }
         stopRequested.set(false);
@@ -161,12 +161,14 @@ public class DiscoveryEngineService {
                     try {
                         List<Device> neighbors = future.get(120, TimeUnit.SECONDS);
                         for (Device n : neighbors) {
+                            if (n == null || n.getId() == null) continue;
                             if (visited.add(n.getId())
                                     && devicesProcessed.get() + nextLevel.size() < maxDevices) {
                                 nextLevel.add(n.getId());
                             }
                         }
                     } catch (TimeoutException e) {
+                        future.cancel(true); // eliberam thread-ul, nu il lasam sa ruleze
                         log.warn("BFS worker timeout la nivelul {}", depth);
                     } catch (Exception e) {
                         log.error("Eroare in BFS worker nivel {}: {}", depth, e.getMessage());

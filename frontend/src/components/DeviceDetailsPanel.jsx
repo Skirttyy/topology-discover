@@ -26,12 +26,15 @@ export default function DeviceDetailsPanel({ deviceId, onClose }) {
 
   useEffect(() => {
     if (!deviceId) return;
+    let mounted = true;
     setLoading(true);
     setError(null);
+    setDevice(null);
     getDevice(deviceId)
-      .then(setDevice)
-      .catch((e) => setError(e.message || 'Eroare la incarcare'))
-      .finally(() => setLoading(false));
+      .then(d  => { if (mounted) setDevice(d); })
+      .catch(e => { if (mounted) setError(e.message || 'Eroare la incarcare'); })
+      .finally(() => { if (mounted) setLoading(false); });
+    return () => { mounted = false; };
   }, [deviceId]);
 
   if (!deviceId) return null;
@@ -177,13 +180,13 @@ export default function DeviceDetailsPanel({ deviceId, onClose }) {
               <Field label="Ultima interogare" value={formatDate(device.lastPolledAt)} />
             </Section>
 
-            <Section title={`Interfete (${device.interfaces?.length || 0})`}>
-              {(!device.interfaces || device.interfaces.length === 0) && (
+            <Section title={`Interfete (${device.interfaces?.length ?? 0})`}>
+              {(!(device.interfaces?.length)) && (
                 <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
                   Nicio interfata descoperita inca.
                 </div>
               )}
-              {device.interfaces?.map((iface) => (
+              {(device.interfaces ?? []).map((iface) => (
                 <div
                   key={iface.name}
                   style={{
@@ -270,7 +273,9 @@ function Field({ label, value }) {
 function formatDate(isoString) {
   if (!isoString) return null;
   try {
-    return new Date(isoString).toLocaleString('ro-RO');
+    const d = new Date(isoString);
+    if (isNaN(d.getTime())) return isoString; // data invalida — afisam raw
+    return d.toLocaleString('ro-RO');
   } catch {
     return isoString;
   }

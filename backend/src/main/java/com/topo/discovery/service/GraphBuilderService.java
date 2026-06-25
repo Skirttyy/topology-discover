@@ -24,22 +24,24 @@ public class GraphBuilderService {
     private final LinkRepository linkRepository;
 
     public TopologyGraphResponse buildTopologyGraph() {
-        List<Device> devices = deviceRepository.findAll();
-        List<Link> links = linkRepository.findAll();
+        // Copiem listele inainte de iterare — discovery poate modifica DB concurent
+        List<Device> devices = new ArrayList<>(deviceRepository.findAll());
+        List<Link>   links   = new ArrayList<>(linkRepository.findAll());
 
         List<TopologyGraphResponse.GraphNode> nodes = devices.stream()
                 .map(GraphBuilderService::toNode)
                 .toList();
 
-        // deduplicam muchiile (link-urile sunt directionale in DB)
-        Set<String> seen = new HashSet<>();
+        Set<String> seen  = new HashSet<>();
         List<TopologyGraphResponse.GraphEdge> edges = new ArrayList<>();
 
         for (Link link : links) {
-            if (link.getRemoteDevice() == null) continue;
+            // Ambele capete trebuie sa existe
+            if (link.getLocalDevice() == null || link.getRemoteDevice() == null) continue;
 
             Long localId  = link.getLocalDevice().getId();
             Long remoteId = link.getRemoteDevice().getId();
+            if (localId == null || remoteId == null || localId.equals(remoteId)) continue;
             String key = Math.min(localId, remoteId) + "-" + Math.max(localId, remoteId);
 
             if (seen.contains(key)) continue;

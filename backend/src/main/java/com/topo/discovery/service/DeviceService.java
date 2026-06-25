@@ -112,10 +112,12 @@ public class DeviceService {
 
     /** Decripteaza parola SSH a unui device - folosit DOAR intern, in motorul de discovery. */
     public String decryptSshPassword(Device device) {
+        if (device.getSshPasswordEncrypted() == null) return null;
         return encryptionService.decrypt(device.getSshPasswordEncrypted());
     }
 
     public String decryptSnmpCommunity(Device device) {
+        if (device.getSnmpCommunityEncrypted() == null) return defaultSnmpCommunity;
         return encryptionService.decrypt(device.getSnmpCommunityEncrypted());
     }
 

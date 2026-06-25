@@ -302,16 +302,7 @@ function ErrorBadge({ hasError, hasWarn }) {
   );
 }
 
-function PulseStyle({ color }) {
-  return (
-    <style>{`
-      @keyframes topo-pulse {
-        0%   { box-shadow: 0 0 0 0 ${color}55; }
-        70%  { box-shadow: 0 0 0 6px transparent; }
-        100% { box-shadow: 0 0 0 0 transparent; }
-      }
-    `}</style>
-  );
-}
+// keyframe-ul topo-pulse e definit global in index.css — nu mai injectam per nod
+function PulseStyle() { return null; }
 
 export default memo(DeviceNode);
