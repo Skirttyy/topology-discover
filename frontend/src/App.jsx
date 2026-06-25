@@ -92,7 +92,7 @@ export default function App() {
   const [scanErr,    setScanErr]    = useState(null);
   const [confirmReset, setConfirmReset] = useState(false);
   const [form, setForm] = useState({
-    subnet: '192.168.1.0/24', vendor: 'JUNIPER',
+    subnet: '192.168.1.0/24',
     sshUsername: '', sshPassword: '', snmpCommunity: '',
   });
 
@@ -169,9 +169,17 @@ export default function App() {
 
       case 'LINK_DISCOVERED': {
         const eid = String(p.edge?.id);
+        const src = String(p.edge?.source);
+        const tgt = String(p.edge?.target);
         addMsg(`⟷ link ${p.edge?.source} ↔ ${p.edge?.target}`, '#7C8CF8');
         setEdges(prev => {
-          if (!eid || prev.find(e => e.id === eid)) return prev;
+          if (!eid) return prev;
+          // deduplicare pe pereche (bonding/LAG poate trimite mai multe LINK_DISCOVERED)
+          const pairExists = prev.find(e =>
+            (e.source === src && e.target === tgt) ||
+            (e.source === tgt && e.target === src)
+          );
+          if (pairExists) return prev;
           const ne = { ...mkEdge(p.edge), animated: true };
           setTimeout(() => setEdges(es => es.map(e => e.id === eid ? { ...e, animated: false } : e)), 2000);
           return [...prev, ne];
@@ -226,6 +234,7 @@ export default function App() {
     try {
       const res = await scanSubnet({
         ...form,
+        vendor: 'UNKNOWN',          // auto-detect intotdeauna via SNMP sysDescr
         snmpCommunity: form.snmpCommunity || undefined,
         autoStartDiscovery: true,
       });
@@ -284,7 +293,7 @@ export default function App() {
           topology-discovery
         </span>
         <span style={{ fontSize: 11, color: '#5A6275', fontFamily: 'JetBrains Mono,monospace' }}>
-          L2/L3 · Juniper · Arista
+          L2/L3 · Juniper · Arista · MikroTik
         </span>
       </header>
 
@@ -341,18 +350,7 @@ export default function App() {
                   onChange={e => setForm(f => ({ ...f, subnet: e.target.value }))} required />
               </div>
 
-              <div style={{ marginBottom: 10 }}>
-                <label style={lbl}>Vendor</label>
-                <select style={{ ...input, cursor: 'pointer' }} value={form.vendor}
-                  onChange={e => setForm(f => ({ ...f, vendor: e.target.value }))}>
-                  <option value="JUNIPER">Juniper</option>
-                  <option value="ARISTA">Arista</option>
-                  <option value="MIKROTIK">MikroTik</option>
-                  <option value="UNKNOWN">Auto-detect</option>
-                </select>
-              </div>
-
-              <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+<div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
                 <div style={{ flex: 1 }}>
                   <label style={lbl}>SSH user</label>
                   <input style={input} value={form.sshUsername}

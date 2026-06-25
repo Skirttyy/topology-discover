@@ -88,6 +88,13 @@ public class DiscoveryEngineService {
 
         try {
             runBfs(seedDeviceIds);
+
+            // Rezolvam placeholder-urile lldp:* create in timpul BFS-ului paralel.
+            // La procesare paralela, device-ul X poate fi descoperit via LLDP de Y
+            // inainte ca X sa-si salveze hostname-ul in DB -> se creeaza un placeholder.
+            // Dupa ce toate device-urile sunt procesate, putem face match hostname -> IP real.
+            resolvePlaceholders();
+
             finishedAt = LocalDateTime.now().toString();
             int totalLinks = linkRepository.findAll().size();
             if (stopRequested.get()) {
@@ -407,6 +414,67 @@ public class DiscoveryEngineService {
                     iface.setIpAddress(arp.getIpAddress());
                     interfaceRepository.save(iface);
                 }
+            });
+        }
+    }
+
+    /**
+     * Rezolva placeholder-urile "lldp:<hostname>" create in BFS-ul paralel.
+     *
+     * Problema: la procesare paralela, device-ul A descoperit prin LLDP de B poate
+     * sa nu aiba inca hostname-ul salvat in DB in momentul in care B il cauta.
+     * Rezultat: se creeaza un placeholder "lldp:A" duplicat langa device-ul real A.
+     *
+     * Solutia: dupa ce BFS termina si toate hostname-urile sunt scrise,
+     * facem un pas de rezolutie: gasim device-ul real pentru fiecare placeholder,
+     * mutam link-urile, stergem placeholder-ul.
+     */
+    private void resolvePlaceholders() {
+        List<Device> placeholders = deviceRepository.findAll().stream()
+                .filter(d -> d.getManagementIp().startsWith("lldp:"))
+                .toList();
+
+        if (placeholders.isEmpty()) return;
+        log.info("Rezolvare {} placeholder-uri lldp:*", placeholders.size());
+
+        for (Device placeholder : placeholders) {
+            String hostname = placeholder.getHostname();
+            if (hostname == null || hostname.isBlank()) continue;
+
+            // Cauta device-ul real dupa hostname (a fost setat in BFS dupa ce s-a terminat procesarea)
+            deviceRepository.findFirstByHostnameIgnoreCase(hostname).ifPresent(real -> {
+                if (real.getId().equals(placeholder.getId())) return; // acelasi device
+                if (real.getManagementIp().startsWith("lldp:")) return; // tot placeholder
+
+                log.info("Rezolvare placeholder {} -> {} ({})",
+                        placeholder.getManagementIp(), real.getHostname(), real.getManagementIp());
+
+                // Muta link-urile de la placeholder la device-ul real
+                linkRepository.findByLocalDevice(placeholder).forEach(link -> {
+                    // evita link self-loop dupa mutare
+                    if (!link.getRemoteDevice().equals(real)) {
+                        link.setLocalDevice(real);
+                        linkRepository.save(link);
+                    } else {
+                        linkRepository.delete(link);
+                    }
+                });
+
+                linkRepository.findByRemoteDevice(placeholder).forEach(link -> {
+                    if (!link.getLocalDevice().equals(real)) {
+                        link.setRemoteDevice(real);
+                        linkRepository.save(link);
+                    } else {
+                        linkRepository.delete(link);
+                    }
+                });
+
+                // Sterge placeholder-ul si interfetele lui
+                interfaceRepository.findByDevice(placeholder).forEach(interfaceRepository::delete);
+                deviceRepository.delete(placeholder);
+
+                // Notifica frontend: nodul placeholder a fost inlocuit cu cel real
+                progressNotifier.notifyNodeUpdated(GraphBuilderService.toNode(real));
             });
         }
     }
