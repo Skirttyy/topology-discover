@@ -129,13 +129,16 @@ public class DiscoveryEngineService {
 
                 log.info("BFS nivel {}: {} device-uri in paralel", depth, currentLevel.size());
 
+                // captura finala pentru lambda (depth e modificat in bucla)
+                final int currentDepth = depth;
+
                 // trimitem toate device-urile de pe nivelul curent in paralel
                 List<Future<List<Device>>> futures = new ArrayList<>();
                 for (Long deviceId : currentLevel) {
                     futures.add(bfsPool.submit(() -> {
                         Device device = deviceRepository.findById(deviceId).orElse(null);
                         if (device == null) return List.of();
-                        log.info("BFS procesez: {} (depth={})", device.getManagementIp(), depth);
+                        log.info("BFS procesez: {} (depth={})", device.getManagementIp(), currentDepth);
                         progressNotifier.notifyProcessing(device.getManagementIp(), "POLLING");
                         List<Device> neighbors = processDevice(device);
                         devicesProcessed.incrementAndGet();
