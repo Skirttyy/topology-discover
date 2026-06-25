@@ -105,6 +105,8 @@ function DeviceNode({ data, selected }) {
         fontFamily: 'var(--font-ui)',
       }}>
         <Handle id="t-top"    type="target" position={Position.Top}    style={H} />
+        <Handle id="s-top"    type="source" position={Position.Top}    style={H} />
+        <Handle id="t-bottom" type="target" position={Position.Bottom} style={H} />
         <Handle id="s-bottom" type="source" position={Position.Bottom} style={H} />
         <Handle id="t-left"   type="target" position={Position.Left}   style={H} />
         <Handle id="s-left"   type="source" position={Position.Left}   style={H} />
@@ -146,6 +148,8 @@ function DeviceNode({ data, selected }) {
         animation: 'nodeAppear 0.35s cubic-bezier(0.34,1.56,0.64,1) both',
       }}>
         <Handle id="t-top"    type="target" position={Position.Top}    style={H} />
+        <Handle id="s-top"    type="source" position={Position.Top}    style={H} />
+        <Handle id="t-bottom" type="target" position={Position.Bottom} style={H} />
         <Handle id="s-bottom" type="source" position={Position.Bottom} style={H} />
         <Handle id="t-left"   type="target" position={Position.Left}   style={H} />
         <Handle id="s-left"   type="source" position={Position.Left}   style={H} />
@@ -195,6 +199,8 @@ function DeviceNode({ data, selected }) {
         animation: 'nodeAppear 0.35s cubic-bezier(0.34,1.56,0.64,1) both',
       }}>
         <Handle id="t-top"    type="target" position={Position.Top}    style={H} />
+        <Handle id="s-top"    type="source" position={Position.Top}    style={H} />
+        <Handle id="t-bottom" type="target" position={Position.Bottom} style={H} />
         <Handle id="s-bottom" type="source" position={Position.Bottom} style={H} />
         <Handle id="t-left"   type="target" position={Position.Left}   style={H} />
         <Handle id="s-left"   type="source" position={Position.Left}   style={H} />

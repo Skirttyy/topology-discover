@@ -250,13 +250,15 @@ function applyEdgeRouting(nodes, edges) {
     // Pragul 0.6 face layout-ul sa prefere vertical (tipic pentru topologii ierarhice)
     const isVertical = Math.abs(dy) >= Math.abs(dx) * 0.6;
 
+    // sourceHandle = handle de TIP SOURCE pe nodul sursa
+    // targetHandle = handle de TIP TARGET pe nodul destinatie
     let sp, tp, sh, th;
     if (isVertical) {
-      if (dy >= 0) { sp = 'bottom'; sh = 's-bottom'; tp = 'top';    th = 't-top'; }
-      else         { sp = 'top';    sh = 't-top';    tp = 'bottom'; th = 's-bottom'; }
+      if (dy >= 0) { sp = 'bottom'; sh = 's-bottom'; tp = 'top';    th = 't-top';    }
+      else         { sp = 'top';    sh = 's-top';    tp = 'bottom'; th = 't-bottom';  }
     } else {
-      if (dx >= 0) { sp = 'right'; sh = 's-right'; tp = 'left';  th = 't-left'; }
-      else         { sp = 'left';  sh = 's-left';  tp = 'right'; th = 't-right'; }
+      if (dx >= 0) { sp = 'right';  sh = 's-right';  tp = 'left';   th = 't-left';   }
+      else         { sp = 'left';   sh = 's-left';   tp = 'right';  th = 't-right';  }
     }
 
     return { ...e, sourcePosition: sp, targetPosition: tp, sourceHandle: sh, targetHandle: th };
