@@ -20,6 +20,7 @@ import java.time.LocalDateTime;
 import java.util.*;
 import java.util.Optional;
 import java.util.concurrent.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -240,12 +241,16 @@ public class DiscoveryEngineService {
                 }
             }
 
-            // Pasul 3: interfete prin SNMP
-            try {
-                pollInterfaces(device, snmpCommunity);
-            } catch (Exception e) {
-                warnings.add("[SNMP] IF-MIB walk esuat: " + e.getMessage());
-                log.warn("IF-MIB walk esuat pe {}: {}", device.getManagementIp(), e.getMessage());
+            // Pasul 3: interfete prin SNMP (sarim daca SNMP nu raspunde deloc)
+            if (sysDescr != null) {
+                try {
+                    pollInterfaces(device, snmpCommunity);
+                } catch (Exception e) {
+                    warnings.add("[SNMP] IF-MIB walk esuat: " + e.getMessage());
+                    log.warn("IF-MIB walk esuat pe {}: {}", device.getManagementIp(), e.getMessage());
+                }
+            } else {
+                log.info("Sarim IF-MIB + LLDP walk pe {} — SNMP indisponibil", device.getManagementIp());
             }
 
             // Salveaza device-ul — ACTIVE daca avem cel putin sysDescr sau hostname
@@ -257,13 +262,15 @@ public class DiscoveryEngineService {
 
             progressNotifier.notifyNodeUpdated(GraphBuilderService.toNode(device));
 
-            // Pasul 4: LLDP neighbors
+            // Pasul 4: LLDP neighbors (sarim daca SNMP nu raspunde)
             List<SnmpCollector.LldpNeighbor> lldpNeighbors = List.of();
-            try {
-                lldpNeighbors = snmpCollector.walkLldpNeighbors(device.getManagementIp(), snmpCommunity);
-            } catch (Exception e) {
-                warnings.add("[SNMP] LLDP walk esuat: " + e.getMessage());
-                log.warn("LLDP walk esuat pe {}: {}", device.getManagementIp(), e.getMessage());
+            if (sysDescr != null) {
+                try {
+                    lldpNeighbors = snmpCollector.walkLldpNeighbors(device.getManagementIp(), snmpCommunity);
+                } catch (Exception e) {
+                    warnings.add("[SNMP] LLDP walk esuat: " + e.getMessage());
+                    log.warn("LLDP walk esuat pe {}: {}", device.getManagementIp(), e.getMessage());
+                }
             }
 
             log.info("LLDP: {} vecini pe {}", lldpNeighbors.size(), device.getManagementIp());
@@ -305,37 +312,58 @@ public class DiscoveryEngineService {
      * Returneaza null daca vendor-ul a fost detectat si datele completate,
      * sau mesajul de eroare daca niciun vendor nu a raspuns corespunzator.
      */
+    /**
+     * Probeaza SSH in paralel pentru toti vendor-ii suportati.
+     * Primul raspuns valid castiga — mult mai rapid decat secvential.
+     */
     private String probeVendorViaSsh(Device device, String sshPassword) {
         Vendor[] vendors = { Vendor.MIKROTIK, Vendor.ARISTA, Vendor.JUNIPER };
 
-        for (Vendor v : vendors) {
+        // Lansam toate probele in paralel
+        record ProbeResult(Vendor vendor, String output, VendorAdapter adapter) {}
+
+        List<CompletableFuture<ProbeResult>> futures = Arrays.stream(vendors)
+                .map(v -> CompletableFuture.supplyAsync(() -> {
+                    try {
+                        VendorAdapter adapter = vendorAdapterFactory.getAdapter(v);
+                        log.debug("SSH probe paralel [{}] catre {}", v, device.getManagementIp());
+                        String out = sshExecutor.executeCommand(
+                                device.getManagementIp(), SSH_PORT,
+                                device.getSshUsername(), sshPassword,
+                                adapter.getShowVersionCommand());
+                        if (out != null && !out.isBlank()) return new ProbeResult(v, out, adapter);
+                    } catch (Exception e) {
+                        log.debug("SSH probe [{}] esuat pe {}: {}", v, device.getManagementIp(), e.getMessage());
+                    }
+                    return null;
+                }))
+                .toList();
+
+        // Asteptam rezultatele in ordine de prioritate (MikroTik, Arista, Juniper)
+        for (int i = 0; i < vendors.length; i++) {
             try {
-                VendorAdapter adapter = vendorAdapterFactory.getAdapter(v);
-                String cmd = adapter.getShowVersionCommand();
-                log.debug("SSH probe [{}] catre {}: '{}'", v, device.getManagementIp(), cmd);
+                ProbeResult pr = futures.get(i).get(12, TimeUnit.SECONDS);
+                if (pr == null) continue;
 
-                String out = sshExecutor.executeCommand(
-                        device.getManagementIp(), SSH_PORT,
-                        device.getSshUsername(), sshPassword, cmd);
+                Vendor v = pr.vendor();
+                String out = pr.output();
+                boolean matches = switch (v) {
+                    case MIKROTIK -> out.contains("board-name") || out.contains("RouterOS") || out.contains("MikroTik");
+                    case JUNIPER  -> out.contains("Junos") || out.contains("JUNOS");
+                    case ARISTA   -> out.contains("Arista") || out.contains("EOS");
+                    default -> false;
+                };
+                if (!matches) {
+                    Vendor detected = Vendor.detect(out);
+                    if (detected == Vendor.UNKNOWN) continue;
+                    matches = (detected == v);
+                }
 
-                if (out == null || out.isBlank()) continue;
-
-                log.debug("SSH probe output de la {} ({}): {}",
-                        device.getManagementIp(), v,
-                        out.length() > 200 ? out.substring(0, 200) + "..." : out);
-
-                // Verifica daca outputul corespunde vendor-ului probat
-                Vendor detected = Vendor.detect(out);
-                if (detected == v
-                        || (v == Vendor.MIKROTIK && (out.contains("board-name") || out.contains("RouterOS")))
-                        || (v == Vendor.JUNIPER  && (out.contains("Junos") || out.contains("JUNOS")))
-                        || (v == Vendor.ARISTA   && (out.contains("Arista") || out.contains("EOS")))) {
-
-                    Vendor finalVendor = (detected != Vendor.UNKNOWN) ? detected : v;
-                    device.setVendor(finalVendor);
-                    log.info("Vendor detectat via SSH probe pe {}: {}", device.getManagementIp(), finalVendor);
-
-                    VendorAdapter.ParsedVersionInfo info = adapter.parseVersionOutput(out);
+                if (matches) {
+                    Vendor detected = Vendor.detect(out);
+                    device.setVendor(detected != Vendor.UNKNOWN ? detected : v);
+                    log.info("Vendor detectat via SSH probe paralel pe {}: {}", device.getManagementIp(), device.getVendor());
+                    VendorAdapter.ParsedVersionInfo info = pr.adapter().parseVersionOutput(out);
                     if (info.hostname()     != null && device.getHostname()     == null) device.setHostname(info.hostname());
                     if (info.model()        != null) device.setModel(info.model());
                     if (info.osVersion()    != null) device.setOsVersion(info.osVersion());
@@ -343,7 +371,7 @@ public class DiscoveryEngineService {
                     return null; // succes
                 }
             } catch (Exception e) {
-                log.debug("SSH probe [{}] esuat pe {}: {}", v, device.getManagementIp(), e.getMessage());
+                log.debug("SSH probe get() esuat: {}", e.getMessage());
             }
         }
 

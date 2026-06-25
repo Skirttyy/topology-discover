@@ -24,21 +24,20 @@ jasypt:
 # Configurari proprii ale aplicatiei de discovery
 discovery:
   ssh:
-    connect-timeout-ms: 8000
-    command-timeout-ms: 15000
+    connect-timeout-ms: 4000   # era 8000 — lab local, 4s e suficient
+    command-timeout-ms: 8000   # era 15000 — comenzile simple nu dureaza mai mult
   snmp:
     community: public
-    timeout-ms: 3000
-    retries: 1
+    timeout-ms: 1500           # era 3000 — local LAN, 1.5s e suficient
+    retries: 0                 # era 1 — 0 retry = 2x mai rapid la fail (nu retry pe device mort)
   subnet-scan:
-    # cate IP-uri se verifica in paralel cand scanam un subnet
-    parallel-threads: 20
+    parallel-threads: 50       # era 20 — mai rapid pentru /24 (254 IP-uri)
     port-check: 22
-    port-timeout-ms: 1000
+    port-timeout-ms: 500       # era 1000 — lab local, 500ms ajunge
   bfs:
     max-depth: 10
     max-devices: 200
-    parallel-threads: 5
+    parallel-threads: 10       # era 5 — mai multe device-uri in paralel
 
 springdoc:
   swagger-ui:

@@ -16,6 +16,8 @@ import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Colecteaza date prin SNMP v2c folosind MIB-uri standard.
@@ -98,11 +100,19 @@ public class SnmpCollector {
     public List<LldpNeighbor> walkLldpNeighbors(String host, String community) {
         List<LldpNeighbor> neighbors = new ArrayList<>();
         try {
-            List<SnmpEntry> sysNames   = walk(host, community, OID_LLDP_REM_SYS_NAME);
-            List<SnmpEntry> portIds    = walk(host, community, OID_LLDP_REM_PORT_ID);
-            List<SnmpEntry> portDescrs = walk(host, community, OID_LLDP_REM_PORT_DESCR);
-            List<SnmpEntry> chassisIds = walk(host, community, OID_LLDP_REM_CHASSIS_ID);
-            List<SnmpEntry> locPorts   = walk(host, community, OID_LLDP_LOC_PORT_ID);
+            // Walk-urile LLDP sunt independente — le rulam in paralel
+            int timeoutSec = (timeoutMs * 2) / 1000 + 5;
+            CompletableFuture<List<SnmpEntry>> sysNameF   = walkAsync(host, community, OID_LLDP_REM_SYS_NAME);
+            CompletableFuture<List<SnmpEntry>> portIdF    = walkAsync(host, community, OID_LLDP_REM_PORT_ID);
+            CompletableFuture<List<SnmpEntry>> portDescrF = walkAsync(host, community, OID_LLDP_REM_PORT_DESCR);
+            CompletableFuture<List<SnmpEntry>> chassisF   = walkAsync(host, community, OID_LLDP_REM_CHASSIS_ID);
+            CompletableFuture<List<SnmpEntry>> locPortF   = walkAsync(host, community, OID_LLDP_LOC_PORT_ID);
+
+            List<SnmpEntry> sysNames   = sysNameF.get(timeoutSec, TimeUnit.SECONDS);
+            List<SnmpEntry> portIds    = portIdF.get(timeoutSec, TimeUnit.SECONDS);
+            List<SnmpEntry> portDescrs = portDescrF.get(timeoutSec, TimeUnit.SECONDS);
+            List<SnmpEntry> chassisIds = chassisF.get(timeoutSec, TimeUnit.SECONDS);
+            List<SnmpEntry> locPorts   = locPortF.get(timeoutSec, TimeUnit.SECONDS);
 
             // indexul LLDP e: <timeMark>.<localPortNum>.<remoteIndex>
             // ne intereseaza localPortNum ca sa stim prin ce port local vedem vecinul
@@ -180,27 +190,37 @@ public class SnmpCollector {
     public List<InterfaceEntry> walkInterfaces(String host, String community) {
         List<InterfaceEntry> result = new ArrayList<>();
         try {
-            List<SnmpEntry> descrs       = walk(host, community, OID_IF_DESCR);
-            List<SnmpEntry> macs         = walk(host, community, OID_IF_PHYS_ADDR);
-            List<SnmpEntry> adminSts     = walk(host, community, OID_IF_ADMIN_STATUS);
-            List<SnmpEntry> operSts      = walk(host, community, OID_IF_OPER_STATUS);
-            List<SnmpEntry> speeds       = walk(host, community, OID_IF_SPEED);
-            List<SnmpEntry> aliases      = walk(host, community, OID_IF_ALIAS);
+            // Toate walk-urile IF-MIB sunt independente — le rulam in paralel
+            int timeoutSec = (timeoutMs * 2) / 1000 + 5;
+            CompletableFuture<List<SnmpEntry>> descrF   = walkAsync(host, community, OID_IF_DESCR);
+            CompletableFuture<List<SnmpEntry>> macF     = walkAsync(host, community, OID_IF_PHYS_ADDR);
+            CompletableFuture<List<SnmpEntry>> adminF   = walkAsync(host, community, OID_IF_ADMIN_STATUS);
+            CompletableFuture<List<SnmpEntry>> operF    = walkAsync(host, community, OID_IF_OPER_STATUS);
+            CompletableFuture<List<SnmpEntry>> speedF   = walkAsync(host, community, OID_IF_SPEED);
+            CompletableFuture<List<SnmpEntry>> aliasF   = walkAsync(host, community, OID_IF_ALIAS);
+            CompletableFuture<List<SnmpEntry>> ipIdxF   = walkAsync(host, community, OID_IP_ADDR_IFINDEX);
+            CompletableFuture<List<SnmpEntry>> ipMaskF  = walkAsync(host, community, OID_IP_ADDR_NETMASK);
+
+            List<SnmpEntry> descrs   = descrF.get(timeoutSec, TimeUnit.SECONDS);
+            List<SnmpEntry> macs     = macF.get(timeoutSec, TimeUnit.SECONDS);
+            List<SnmpEntry> adminSts = adminF.get(timeoutSec, TimeUnit.SECONDS);
+            List<SnmpEntry> operSts  = operF.get(timeoutSec, TimeUnit.SECONDS);
+            List<SnmpEntry> speeds   = speedF.get(timeoutSec, TimeUnit.SECONDS);
+            List<SnmpEntry> aliases  = aliasF.get(timeoutSec, TimeUnit.SECONDS);
 
             // IP addresses per ifIndex
             Map<String, String> ifIndexToIp      = new HashMap<>();
             Map<String, String> ifIndexToNetmask = new HashMap<>();
             try {
-                List<SnmpEntry> ipIfIndex = walk(host, community, OID_IP_ADDR_IFINDEX);
-                List<SnmpEntry> ipNetmask = walk(host, community, OID_IP_ADDR_NETMASK);
+                List<SnmpEntry> ipIfIndex = ipIdxF.get(timeoutSec, TimeUnit.SECONDS);
+                List<SnmpEntry> ipNetmask = ipMaskF.get(timeoutSec, TimeUnit.SECONDS);
                 for (SnmpEntry e : ipIfIndex) {
-                    // OID: ...4.20.1.2.<ip1>.<ip2>.<ip3>.<ip4> -> value = ifIndex
                     String ipSuffix = stripPrefix(e.oid(), OID_IP_ADDR_IFINDEX);
-                    ifIndexToIp.put(e.value(), ipSuffix); // ifIndex -> IP
+                    ifIndexToIp.put(e.value(), ipSuffix);
                 }
                 for (SnmpEntry e : ipNetmask) {
                     String ipSuffix = stripPrefix(e.oid(), OID_IP_ADDR_NETMASK);
-                    ifIndexToNetmask.put(ipSuffix, e.value()); // IP -> netmask
+                    ifIndexToNetmask.put(ipSuffix, e.value());
                 }
             } catch (Exception ignored) {}
 
@@ -232,6 +252,20 @@ public class SnmpCollector {
             log.warn("Interface walk esuat pentru {}: {}", host, e.getMessage());
         }
         return result;
+    }
+
+    // ---- Async helper ----
+
+    /** Ruleaza un SNMP walk asincron pe ForkJoinPool.commonPool(). */
+    private CompletableFuture<List<SnmpEntry>> walkAsync(String host, String community, String baseOid) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return walk(host, community, baseOid);
+            } catch (Exception e) {
+                log.debug("walkAsync esuat {}/{}: {}", host, baseOid, e.getMessage());
+                return List.of();
+            }
+        });
     }
 
     // ---- Private helpers ----
