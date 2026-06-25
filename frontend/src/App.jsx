@@ -10,7 +10,7 @@ import SockJS from 'sockjs-client';
 
 import DeviceNode from './components/DeviceNode';
 import DeviceDetailsPanel from './components/DeviceDetailsPanel';
-import { getTopology, scanSubnet, stopDiscovery, resetTopology, WS_BASE_URL } from './api/client';
+import { getTopology, scanSubnet, stopDiscovery, resetTopology, getDiscoveryStatus, WS_BASE_URL } from './api/client';
 
 // ─── React Flow node type ───────────────────────────────────────────────────
 const nodeTypes = { device: DeviceNode };
@@ -49,27 +49,57 @@ function mkNode(raw, position) {
       model:        raw.model,
       osVersion:    raw.osVersion,
       sysDescr:     raw.sysDescr,
+      lastError:    raw.lastError,
     },
   };
 }
 
-// Curata si scurteaza un port name din LLDP
-// "529 :: LACP-1/2-AE0" → "ae0" (detectam LAG/LACP si extragem numele)
-// "ge-0/0/1" → "ge-0/0/1"
-function cleanPort(s) {
-  if (!s) return '';
-  let clean = s.replace(/^\d+\s*::\s*/, '').trim();
-  // detectam LACP/LAG descriere si extragem numai interfata
-  const lagMatch = clean.match(/(?:LACP[^\s]*|LAG[^\s]*|ae\d+|bond\d+|Po\d+)/i);
-  if (lagMatch) clean = lagMatch[0].toLowerCase();
-  // trunchierea finala
-  return clean.length > 12 ? clean.substring(0, 12) : clean;
+/**
+ * Extrage cel mai relevant nume de interfata din LLDP, cu prioritate:
+ *
+ * 1. Interfata de bonding explicita: "ae0", "ae1", "bond0", "Po1", "port-channel3"
+ * 2. Numar AE extras din descriere LACP:  "LACP-1/2-AE0" → "ae0"
+ *                                          "1/3-LACP-ae2" → "ae2"
+ * 3. Member de bonding (fizic) cand stim ca face parte dintr-un bond (LACP/LAG in descriere)
+ *    → returnam tot ce avem, truncat, prefixat cu "~" ca sa indicam ca e member
+ * 4. Daca nu e nimic legat de bonding → returnam null (nu afisam nimic)
+ *    (adica o interfata fizica simpla ge-0/0/x nu are sens pe un link de bonding)
+ *
+ * Nota: daca vrei sa afisezi si interfetele fizice normale,
+ *        schimba pasul 4 sa returneze clean truncat.
+ */
+function extractBondIf(s) {
+  if (!s) return null;
+  // Strip SNMP ifIndex prefix: "529 :: ge-0/0/1" → "ge-0/0/1"
+  const clean = s.replace(/^\d+\s*::\s*/, '').trim();
+
+  // 1. Interfata AE/bond directa (ex: "ae0", "ae-0/0/0", "bond3", "Po1", "port-channel2")
+  const direct = clean.match(/^(ae[\d\/\-]+|bond\d+|port-channel\d+|Po\d+)$/i);
+  if (direct) return direct[1].toLowerCase();
+
+  // 2. AE extras din descriere LACP (ex: "LACP-1/2-AE0" sau "1/3/LACP-ae2")
+  const aeNum = clean.match(/\bAE(\d+)\b/i);
+  if (aeNum) return `ae${aeNum[1]}`;
+
+  // Daca AE e scris fara prefix (ex: "ae0" in mijlocul unui string mai lung)
+  const aeMid = clean.match(/\bae(\d+)\b/i);
+  if (aeMid) return `ae${aeMid[1]}`;
+
+  // 3. Stim ca e LACP/LAG dar nu putem extrage nr AE — returnam un rezumat scurt
+  if (/\b(lacp|lag)\b/i.test(clean)) {
+    return clean.length > 10 ? clean.substring(0, 10) : clean;
+  }
+
+  // 4. Interfata fizica simpla (ge-, xe-, et-, eth-, etc.) — nu afisam nimic
+  //    pe un link de bonding n-are sens sa aratam ge-0/0/1 individual
+  return null;
 }
 
 function mkEdge(raw) {
-  const si = cleanPort(raw.sourceInterface);
-  const ti = cleanPort(raw.targetInterface);
-  const label = si && ti ? `${si} ↔ ${ti}` : (si || ti || undefined);
+  const si = extractBondIf(raw.sourceInterface);
+  const ti = extractBondIf(raw.targetInterface);
+  // daca niciuna nu e de tip bonding, nu afisam label
+  const label = (si || ti) ? `${si || '?'} ↔ ${ti || '?'}` : undefined;
   return {
     id:     String(raw.id),
     source: String(raw.source),
@@ -168,8 +198,11 @@ export default function App() {
   const loadTopology = useCallback(() => {
     setLoading(true);
     setTopoErr(null);
-    getTopology()
-      .then(graph => {
+    Promise.all([getTopology(), getDiscoveryStatus()])
+      .then(([graph, status]) => {
+        // sincronizam starea running cu backend-ul (persista dupa refresh)
+        setRunning(status.running === true);
+
         const fn = (graph.nodes || []).map(n => mkNode(n));
         const fe = (graph.edges || []).map(mkEdge);
         setEdges(fe);
@@ -200,14 +233,20 @@ export default function App() {
         });
         break;
 
-      case 'NODE_UPDATED':
-        addMsg(`↻ ${p.node?.label || p.node?.managementIp}`, '#4D9DF2');
+      case 'NODE_UPDATED': {
+        const nd = p.node;
+        const hasErr = nd?.lastError;
+        addMsg(
+          `↻ ${nd?.label || nd?.managementIp}${hasErr ? ' ⚠' : ''}`,
+          hasErr ? '#F2A93B' : '#4D9DF2'
+        );
         setNodes(prev => prev.map(n =>
-          n.id === String(p.node?.id)
-            ? { ...n, data: { ...n.data, ...p.node, label: p.node?.label || p.node?.managementIp } }
+          n.id === String(nd?.id)
+            ? { ...n, data: { ...n.data, ...nd, label: nd?.label || nd?.managementIp } }
             : n
         ));
         break;
+      }
 
       case 'LINK_DISCOVERED': {
         const eid = String(p.edge?.id);

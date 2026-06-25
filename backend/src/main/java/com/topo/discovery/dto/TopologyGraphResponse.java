@@ -35,6 +35,7 @@ public class TopologyGraphResponse {
         private String osVersion;
         private String serialNumber;
         private String sysDescr;    // SNMP sysDescr brut - util pt UNKNOWN
+        private String lastError;   // erori SSH/SNMP acumulate (warnings non-fatale sau eroare fatala)
     }
 
     @Data

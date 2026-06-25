@@ -82,11 +82,16 @@ const IconUnknown = ({ color }) => (
 // ── Handle style ───────────────────────────────────────────────────────────
 const H = { background: '#353C4A', width: 7, height: 7, border: '2px solid #1A1F2B' };
 
+const ERROR_COLOR   = '#F2545B';
+const WARNING_COLOR = '#F2A93B';
+
 // ── Main component ─────────────────────────────────────────────────────────
 function DeviceNode({ data, selected }) {
-  const type   = detectType(data);
-  const status = STATUS[data.status] || STATUS.DISCOVERED;
-  const vcolor = VENDOR_COLOR[data.vendor] || VENDOR_COLOR.UNKNOWN;
+  const type      = detectType(data);
+  const status    = STATUS[data.status] || STATUS.DISCOVERED;
+  const vcolor    = VENDOR_COLOR[data.vendor] || VENDOR_COLOR.UNKNOWN;
+  const hasError  = data.status === 'ERROR';
+  const hasWarn   = !hasError && data.lastError && data.lastError.length > 0;
 
   // ── PLACEHOLDER (lldp:*) — dim, dashed ──────────────────────────────────
   if (type === 'PLACEHOLDER') {
@@ -173,9 +178,9 @@ function DeviceNode({ data, selected }) {
   if (type === 'ROUTER') {
     return (
       <div style={{
-        background: selected ? '#1A1E2D' : '#12151F',
-        border: `1.5px solid ${selected ? '#4D9DF2' : vcolor + '55'}`,
-        borderLeft: `3px solid ${vcolor}`,
+        background: selected ? '#1A1E2D' : hasError ? '#180E0E' : '#12151F',
+        border: `1.5px solid ${selected ? '#4D9DF2' : hasError ? ERROR_COLOR + '66' : hasWarn ? WARNING_COLOR + '44' : vcolor + '55'}`,
+        borderLeft: `3px solid ${hasError ? ERROR_COLOR : hasWarn ? WARNING_COLOR : vcolor}`,
         borderRadius: 14,
         minWidth: 200,
         boxShadow: selected
@@ -216,6 +221,7 @@ function DeviceNode({ data, selected }) {
             </div>
           )}
         </div>
+        <ErrorBadge hasError={hasError} hasWarn={hasWarn}/>
         <PulseStyle color={status.color}/>
       </div>
     );
@@ -225,9 +231,9 @@ function DeviceNode({ data, selected }) {
   // (default pentru SWITCH + UNKNOWN con IP real)
   return (
     <div style={{
-      background: selected ? '#141C18' : '#0E1610',
-      border: `1.5px solid ${selected ? '#4D9DF2' : vcolor + '44'}`,
-      borderTop: `3px solid ${vcolor}`,
+      background: selected ? '#141C18' : hasError ? '#180E0E' : '#0E1610',
+      border: `1.5px solid ${selected ? '#4D9DF2' : hasError ? ERROR_COLOR + '66' : hasWarn ? WARNING_COLOR + '44' : vcolor + '44'}`,
+      borderTop: `3px solid ${hasError ? ERROR_COLOR : hasWarn ? WARNING_COLOR : vcolor}`,
       borderRadius: 8,
       minWidth: 200,
       boxShadow: selected
@@ -268,7 +274,30 @@ function DeviceNode({ data, selected }) {
           </div>
         )}
       </div>
+      <ErrorBadge hasError={hasError} hasWarn={hasWarn}/>
       <PulseStyle color={status.color}/>
+    </div>
+  );
+}
+
+function ErrorBadge({ hasError, hasWarn }) {
+  if (!hasError && !hasWarn) return null;
+  const color = hasError ? ERROR_COLOR : WARNING_COLOR;
+  const icon  = hasError ? '✕' : '⚠';
+  const label = hasError ? 'EROARE' : 'AVERTISMENT';
+  return (
+    <div style={{
+      margin: '0 10px 8px',
+      padding: '3px 8px',
+      borderRadius: 4,
+      background: `${color}14`,
+      border: `1px solid ${color}44`,
+      display: 'flex', alignItems: 'center', gap: 5,
+    }}>
+      <span style={{ fontSize: 9, color, fontWeight: 700 }}>{icon}</span>
+      <span style={{ fontSize: 9, color, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+        {label} — click pentru detalii
+      </span>
     </div>
   );
 }

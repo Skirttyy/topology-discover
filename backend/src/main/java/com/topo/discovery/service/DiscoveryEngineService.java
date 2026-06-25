@@ -18,6 +18,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.Optional;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -183,18 +184,28 @@ public class DiscoveryEngineService {
 
     public List<Device> processDevice(Device device) {
         List<Device> newNeighbors = new ArrayList<>();
-        String sshPassword  = deviceService.decryptSshPassword(device);
+        String sshPassword   = deviceService.decryptSshPassword(device);
         String snmpCommunity = deviceService.decryptSnmpCommunity(device);
+
+        // Acumulam warning-uri non-fatale (SSH esuat, SNMP partial, etc.)
+        // pentru a le afisa in UI cand userul da click pe device
+        List<String> warnings = new ArrayList<>();
 
         try {
             device.setStatus(DeviceStatus.POLLING);
             deviceRepository.save(device);
 
-            // Pasul 1: detectie vendor prin SNMP sysDescr (functioneaza pe orice device)
-            String sysDescr = snmpCollector.getSysDescr(device.getManagementIp(), snmpCommunity);
+            // Pasul 1: detectie vendor prin SNMP sysDescr
+            String sysDescr = null;
+            try {
+                sysDescr = snmpCollector.getSysDescr(device.getManagementIp(), snmpCommunity);
+            } catch (Exception e) {
+                warnings.add("[SNMP] sysDescr esuat: " + e.getMessage());
+                log.warn("SNMP sysDescr esuat pe {}: {}", device.getManagementIp(), e.getMessage());
+            }
+
             if (sysDescr != null) {
                 device.setSysDescr(sysDescr.length() > 1000 ? sysDescr.substring(0, 1000) : sysDescr);
-                // daca vendor-ul era UNKNOWN, incearca sa-l detecteze din sysDescr
                 if (device.getVendor() == Vendor.UNKNOWN || device.getVendor() == null) {
                     Vendor detected = Vendor.detect(sysDescr);
                     device.setVendor(detected);
@@ -202,39 +213,55 @@ public class DiscoveryEngineService {
                 }
             }
 
-            // hostname din SNMP (mai rapid si mai fiabil decat SSH pe unele device-uri)
-            String sysName = snmpCollector.getSysName(device.getManagementIp(), snmpCommunity);
-            if (sysName != null && !sysName.isBlank()) {
-                device.setHostname(sysName.trim());
+            // hostname din SNMP
+            try {
+                String sysName = snmpCollector.getSysName(device.getManagementIp(), snmpCommunity);
+                if (sysName != null && !sysName.isBlank()) {
+                    device.setHostname(sysName.trim());
+                }
+            } catch (Exception e) {
+                warnings.add("[SNMP] sysName esuat: " + e.getMessage());
             }
 
-            // Pasul 2: SSH pentru model/version (doar daca vendor e cunoscut)
+            // Pasul 2: SSH pentru model/version
             if (device.getVendor() != Vendor.UNKNOWN && sshPassword != null) {
-                pollViaSsh(device, sshPassword);
+                String sshErr = pollViaSsh(device, sshPassword);
+                if (sshErr != null) warnings.add("[SSH] " + sshErr);
+            } else if (sshPassword == null) {
+                warnings.add("[SSH] Parola SSH lipsa — SSH sarit");
             }
 
             // Pasul 3: interfete prin SNMP
-            pollInterfaces(device, snmpCommunity);
+            try {
+                pollInterfaces(device, snmpCommunity);
+            } catch (Exception e) {
+                warnings.add("[SNMP] IF-MIB walk esuat: " + e.getMessage());
+                log.warn("IF-MIB walk esuat pe {}: {}", device.getManagementIp(), e.getMessage());
+            }
 
-            // salveaza device-ul cu toate datele noi si notifica frontend-ul
+            // Salveaza device-ul — ACTIVE daca avem cel putin sysDescr sau hostname
             device.setStatus(DeviceStatus.ACTIVE);
             device.setLastPolledAt(LocalDateTime.now());
-            device.setLastError(null);
+            // pastram warning-urile ca lastError (nu sunt erori fatale)
+            device.setLastError(warnings.isEmpty() ? null : String.join("\n", warnings));
             device = deviceRepository.save(device);
 
             progressNotifier.notifyNodeUpdated(GraphBuilderService.toNode(device));
 
-            // Pasul 4: LLDP neighbors - sursa principala de link-uri
-            List<SnmpCollector.LldpNeighbor> lldpNeighbors =
-                    snmpCollector.walkLldpNeighbors(device.getManagementIp(), snmpCommunity);
+            // Pasul 4: LLDP neighbors
+            List<SnmpCollector.LldpNeighbor> lldpNeighbors = List.of();
+            try {
+                lldpNeighbors = snmpCollector.walkLldpNeighbors(device.getManagementIp(), snmpCommunity);
+            } catch (Exception e) {
+                warnings.add("[SNMP] LLDP walk esuat: " + e.getMessage());
+                log.warn("LLDP walk esuat pe {}: {}", device.getManagementIp(), e.getMessage());
+            }
 
             log.info("LLDP: {} vecini pe {}", lldpNeighbors.size(), device.getManagementIp());
 
             for (SnmpCollector.LldpNeighbor neighbor : lldpNeighbors) {
                 Device neighborDevice = resolveOrCreateNeighbor(neighbor, device, sshPassword, snmpCommunity);
                 createLink(device, neighbor, neighborDevice);
-                // Adaugam in BFS doar daca e un IP real, nu un placeholder lldp:*
-                // Placeholder-urile nu au IP valid si SNMP/SSH vor esua garantat
                 if (neighborDevice != null
                         && neighborDevice.getStatus() == DeviceStatus.DISCOVERED
                         && !neighborDevice.getManagementIp().startsWith("lldp:")) {
@@ -242,13 +269,18 @@ public class DiscoveryEngineService {
                 }
             }
 
-            // Pasul 5: ARP fallback - imbogateste interfetele cu IP-uri
-            enrichWithArp(device, snmpCommunity);
+            // Pasul 5: ARP fallback
+            try {
+                enrichWithArp(device, snmpCommunity);
+            } catch (Exception e) {
+                log.debug("ARP walk esuat pe {} (ignorat): {}", device.getManagementIp(), e.getMessage());
+            }
 
         } catch (Exception e) {
-            log.error("Eroare la procesarea {}: {}", device.getManagementIp(), e.getMessage());
+            log.error("Eroare fatala la procesarea {}: {}", device.getManagementIp(), e.getMessage());
+            warnings.add("[FATAL] " + e.getMessage());
             device.setStatus(DeviceStatus.ERROR);
-            device.setLastError(e.getMessage() != null ? e.getMessage() : "Eroare necunoscuta");
+            device.setLastError(String.join("\n", warnings));
             deviceRepository.save(device);
             progressNotifier.notifyNodeUpdated(GraphBuilderService.toNode(device));
         }
@@ -256,37 +288,35 @@ public class DiscoveryEngineService {
         return newNeighbors;
     }
 
-    private void pollViaSsh(Device device, String sshPassword) {
+    /** Returneaza null daca SSH a reusit, sau mesajul de eroare daca a esuat (non-fatal). */
+    private String pollViaSsh(Device device, String sshPassword) {
         try {
             VendorAdapter adapter = vendorAdapterFactory.getAdapter(device.getVendor());
             String cmd = adapter.getShowVersionCommand();
-            log.debug("SSH [{}] catre {}: comanda '{}'",
-                    device.getVendor(), device.getManagementIp(), cmd);
+            log.debug("SSH [{}] catre {}: '{}'", device.getVendor(), device.getManagementIp(), cmd);
 
-            String versionOutput = sshExecutor.executeCommand(
+            String out = sshExecutor.executeCommand(
                     device.getManagementIp(), SSH_PORT,
                     device.getSshUsername(), sshPassword, cmd);
 
-            log.debug("SSH output de la {} ({} chars): {}",
+            log.debug("SSH output {}: {}",
                     device.getManagementIp(),
-                    versionOutput.length(),
-                    versionOutput.length() > 300 ? versionOutput.substring(0, 300) + "..." : versionOutput);
+                    out.length() > 300 ? out.substring(0, 300) + "..." : out);
 
-            VendorAdapter.ParsedVersionInfo info = adapter.parseVersionOutput(versionOutput);
-            if (info.hostname() != null && device.getHostname() == null) {
-                device.setHostname(info.hostname());
-            }
-            if (info.model() != null) device.setModel(info.model());
+            VendorAdapter.ParsedVersionInfo info = adapter.parseVersionOutput(out);
+            if (info.hostname() != null && device.getHostname() == null) device.setHostname(info.hostname());
+            if (info.model()    != null) device.setModel(info.model());
             if (info.osVersion() != null) device.setOsVersion(info.osVersion());
             if (info.serialNumber() != null) device.setSerialNumber(info.serialNumber());
 
-            if (device.getVendor() == com.topo.discovery.model.Vendor.MIKROTIK) {
-                log.info("MikroTik SSH {} -> hostname={} model={} version={}",
-                        device.getManagementIp(), info.hostname(), info.model(), info.osVersion());
-            }
+            log.info("SSH OK {} [{}] -> hostname={} model={} version={}",
+                    device.getManagementIp(), device.getVendor(),
+                    info.hostname(), info.model(), info.osVersion());
+            return null; // succes
+
         } catch (Exception e) {
-            log.warn("SSH poll esuat pe {} [{}]: {}",
-                    device.getManagementIp(), device.getVendor(), e.getMessage());
+            log.warn("SSH esuat pe {} [{}]: {}", device.getManagementIp(), device.getVendor(), e.getMessage());
+            return e.getMessage(); // returnam eroarea ca warning non-fatal
         }
     }
 
@@ -372,11 +402,35 @@ public class DiscoveryEngineService {
         // Cazul bonding/LAG: ge-0/0/1 si ge-0/0/2 duc ambele la spine01 ->
         // tinem un singur link logic intre core01 si spine01, indiferent de cate porturi fizice.
         if (remoteDevice != null) {
-            boolean pairExists = linkRepository.existsByLocalDeviceAndRemoteDevice(localDevice, remoteDevice)
-                    || linkRepository.existsByLocalDeviceAndRemoteDevice(remoteDevice, localDevice);
-            if (pairExists) {
-                log.debug("Link deja existent intre {} si {}, skip (bonding/LAG)",
-                        localDevice.getManagementIp(), remoteDevice.getManagementIp());
+            // Cauta link existent intre aceasta pereche de device-uri (in orice directie)
+            Optional<Link> existingLink = linkRepository.findByLocalDevice(localDevice).stream()
+                    .filter(l -> remoteDevice.equals(l.getRemoteDevice()))
+                    .findFirst();
+            if (existingLink.isEmpty()) {
+                existingLink = linkRepository.findByLocalDevice(remoteDevice).stream()
+                        .filter(l -> localDevice.equals(l.getRemoteDevice()))
+                        .findFirst();
+            }
+
+            if (existingLink.isPresent()) {
+                // Link existent — updatam interfetele DOAR daca noile date contin
+                // un AE/bonding name mai bun decat ce era stocat (prioritate bonding)
+                Link lnk = existingLink.get();
+                boolean updated = false;
+                if (isBetterIfName(neighbor.getLocalPortId(), lnk.getLocalInterfaceName())) {
+                    lnk.setLocalInterfaceName(neighbor.getLocalPortId());
+                    updated = true;
+                }
+                if (isBetterIfName(neighbor.getRemotePortId(), lnk.getRemoteInterfaceName())) {
+                    lnk.setRemoteInterfaceName(neighbor.getRemotePortId());
+                    updated = true;
+                }
+                if (updated) {
+                    linkRepository.save(lnk);
+                    log.debug("Link {}<->{} updatat cu interfete mai bune: local={} remote={}",
+                            localDevice.getManagementIp(), remoteDevice.getManagementIp(),
+                            lnk.getLocalInterfaceName(), lnk.getRemoteInterfaceName());
+                }
                 return;
             }
         } else {
@@ -411,6 +465,29 @@ public class DiscoveryEngineService {
                             .build()
             );
         }
+    }
+
+    /**
+     * Returneaza true daca 'candidate' e un nume de interfata mai bun decat 'current'.
+     * Prioritate: AE/bond explicit > LACP/LAG description > interfata fizica > null.
+     *
+     * Ex: "ae0" > "LACP-1/2-AE0" > "ge-0/0/1" > null
+     */
+    private boolean isBetterIfName(String candidate, String current) {
+        if (candidate == null || candidate.isBlank()) return false;
+        if (current == null || current.isBlank()) return true;
+        return bondingScore(candidate) > bondingScore(current);
+    }
+
+    private int bondingScore(String name) {
+        if (name == null) return 0;
+        String lower = name.toLowerCase();
+        // AE/bond direct → scor maxim
+        if (lower.matches("ae\\d+.*") || lower.matches("bond\\d+.*") || lower.matches("po\\d+.*")) return 3;
+        // Contine LACP/LAG → bun, dar nu ideal
+        if (lower.contains("lacp") || lower.contains("lag")) return 2;
+        // Interfata fizica simpla
+        return 1;
     }
 
     private void enrichWithArp(Device device, String snmpCommunity) {

@@ -150,29 +150,32 @@ export default function DeviceDetailsPanel({ deviceId, onClose }) {
               </Section>
             )}
 
-            <Section title="Discovery">
-              <Field label="Tip" value={device.seedDevice ? 'Seed (adaugat manual/scan)' : 'Descoperit din topologie'} />
-              <Field label="Prima descoperire" value={formatDate(device.firstDiscoveredAt)} />
-              <Field label="Ultima interogare" value={formatDate(device.lastPolledAt)} />
-            </Section>
-
             {device.lastError && (
-              <Section title="Ultima eroare">
+              <Section title={device.status === 'ERROR' ? '⚠ Eroare' : '⚠ Avertismente (non-fatale)'}>
                 <div style={{
                   fontFamily: 'var(--font-mono)',
-                  fontSize: 12,
-                  color: 'var(--accent-error)',
-                  background: 'rgba(242, 84, 91, 0.08)',
-                  border: '1px solid rgba(242, 84, 91, 0.25)',
+                  fontSize: 11,
+                  color: device.status === 'ERROR' ? 'var(--accent-error)' : 'var(--accent-warning)',
+                  background: device.status === 'ERROR'
+                    ? 'rgba(242,84,91,0.07)' : 'rgba(242,169,59,0.07)',
+                  border: device.status === 'ERROR'
+                    ? '1px solid rgba(242,84,91,0.25)' : '1px solid rgba(242,169,59,0.25)',
                   borderRadius: 6,
                   padding: 10,
                   whiteSpace: 'pre-wrap',
                   wordBreak: 'break-word',
+                  lineHeight: 1.6,
                 }}>
                   {device.lastError}
                 </div>
               </Section>
             )}
+
+            <Section title="Discovery">
+              <Field label="Tip" value={device.seedDevice ? 'Seed (scan subnet)' : 'Descoperit din topologie'} />
+              <Field label="Prima descoperire" value={formatDate(device.firstDiscoveredAt)} />
+              <Field label="Ultima interogare" value={formatDate(device.lastPolledAt)} />
+            </Section>
 
             <Section title={`Interfete (${device.interfaces?.length || 0})`}>
               {(!device.interfaces || device.interfaces.length === 0) && (

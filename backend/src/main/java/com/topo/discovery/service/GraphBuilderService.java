@@ -72,6 +72,7 @@ public class GraphBuilderService {
                 .osVersion(device.getOsVersion())
                 .serialNumber(device.getSerialNumber())
                 .sysDescr(device.getSysDescr())
+                .lastError(device.getLastError())
                 .build();
     }
 }
