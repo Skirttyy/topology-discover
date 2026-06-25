@@ -29,6 +29,7 @@ public class DeviceDetailsResponse {
     private LocalDateTime firstDiscoveredAt;
     private LocalDateTime lastPolledAt;
     private String lastError;
+    private String sysDescr;
     private List<InterfaceResponse> interfaces;
 
     public static DeviceDetailsResponse from(Device device) {
@@ -45,6 +46,7 @@ public class DeviceDetailsResponse {
                 .firstDiscoveredAt(device.getFirstDiscoveredAt())
                 .lastPolledAt(device.getLastPolledAt())
                 .lastError(device.getLastError())
+                .sysDescr(device.getSysDescr())
                 .interfaces(device.getInterfaces().stream()
                         .map(InterfaceResponse::from)
                         .toList())

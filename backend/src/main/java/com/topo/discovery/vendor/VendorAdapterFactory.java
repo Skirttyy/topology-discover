@@ -8,15 +8,6 @@ import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
-/**
- * Selecteaza VendorAdapter-ul corect pe baza enum-ului Vendor.
- * Spring injecteaza automat toate bean-urile care implementeaza VendorAdapter
- * (JuniperAdapter, AristaAdapter, + orice altul adaugat in viitor).
- *
- * Pentru a adauga un vendor nou (ex: Cisco IOS-XR), e suficient sa creezi
- * o clasa noua @Component care implementeaza VendorAdapter - nu trebuie
- * modificat acest fisier.
- */
 @Component
 public class VendorAdapterFactory {
 
@@ -27,10 +18,16 @@ public class VendorAdapterFactory {
                 .collect(Collectors.toMap(VendorAdapter::getVendor, Function.identity()));
     }
 
+    /**
+     * Returneaza adapter-ul pentru vendor-ul dat.
+     * Pentru UNKNOWN, returneaza Juniper ca fallback (comenzile "show version"
+     * si "show hostname" sunt prezente pe majoritatea vendor-ilor).
+     * Daca nu gaseste, fallback la Juniper.
+     */
     public VendorAdapter getAdapter(Vendor vendor) {
         VendorAdapter adapter = adapters.get(vendor);
         if (adapter == null) {
-            throw new IllegalArgumentException("Niciun VendorAdapter inregistrat pentru: " + vendor);
+            return adapters.get(Vendor.JUNIPER); // fallback generic
         }
         return adapter;
     }

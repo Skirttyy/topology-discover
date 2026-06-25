@@ -2,21 +2,23 @@ import React, { useState } from 'react';
 import { scanSubnet } from '../api/client';
 
 const inputStyle = {
-  background: 'var(--bg-panel-raised)',
-  border: '1px solid var(--border-subtle)',
+  background: '#1A1F2B',
+  border: '1px solid #252A35',
   borderRadius: 6,
-  color: 'var(--text-primary)',
-  fontFamily: 'var(--font-mono)',
+  color: '#E4E7EB',
+  fontFamily: "'JetBrains Mono', monospace",
   fontSize: 12,
   padding: '7px 10px',
   outline: 'none',
+  width: '100%',
+  boxSizing: 'border-box',
 };
 
 const labelStyle = {
   fontSize: 10,
-  color: 'var(--text-tertiary)',
+  color: '#5A6275',
   textTransform: 'uppercase',
-  letterSpacing: 0.4,
+  letterSpacing: 0.5,
   marginBottom: 4,
   display: 'block',
 };
@@ -24,7 +26,7 @@ const labelStyle = {
 export default function DiscoveryControls({ onScanComplete, onRefresh }) {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({
-    subnet: '192.168.100.0/24',
+    subnet: '192.168.1.0/24',
     vendor: 'JUNIPER',
     sshUsername: '',
     sshPassword: '',
@@ -34,7 +36,7 @@ export default function DiscoveryControls({ onScanComplete, onRefresh }) {
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
 
-  const handleChange = (field) => (e) => setForm({ ...form, [field]: e.target.value });
+  const set = (field) => (e) => setForm({ ...form, [field]: e.target.value });
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -42,15 +44,15 @@ export default function DiscoveryControls({ onScanComplete, onRefresh }) {
     setError(null);
     setResult(null);
     try {
-      const response = await scanSubnet({
+      const res = await scanSubnet({
         ...form,
         snmpCommunity: form.snmpCommunity || undefined,
         autoStartDiscovery: true,
       });
-      setResult(response);
-      onScanComplete?.(response);
+      setResult(res);
+      onScanComplete?.();
     } catch (err) {
-      setError(err.response?.data?.error || err.message || 'Scanare esuata');
+      setError(err.response?.data?.error || err.message || 'Eroare');
     } finally {
       setScanning(false);
     }
@@ -58,133 +60,96 @@ export default function DiscoveryControls({ onScanComplete, onRefresh }) {
 
   return (
     <div style={{
-      position: 'absolute',
-      top: 16,
-      left: 16,
-      zIndex: 10,
-      background: 'var(--bg-panel)',
-      border: '1px solid var(--border-subtle)',
+      position: 'absolute', top: 16, left: 16, zIndex: 10,
+      background: '#131720',
+      border: '1px solid #252A35',
       borderRadius: 10,
-      boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
-      width: open ? 320 : 'auto',
+      boxShadow: '0 4px 24px rgba(0,0,0,0.5)',
+      width: open ? 300 : 'auto',
+      transition: 'width 0.2s ease',
+      overflow: 'hidden',
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 14px' }}>
+      {/* toolbar */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px' }}>
         <button
           onClick={() => setOpen(!open)}
           style={{
-            background: 'var(--accent-active)',
-            color: '#0B0E14',
-            border: 'none',
-            borderRadius: 6,
-            padding: '7px 14px',
-            fontSize: 12,
-            fontWeight: 600,
+            background: '#3DDC84', color: '#0B0E14',
+            border: 'none', borderRadius: 6,
+            padding: '6px 12px', fontSize: 12, fontWeight: 700,
             cursor: 'pointer',
           }}
         >
-          {open ? 'Inchide' : '+ Scaneaza subnet'}
+          {open ? '✕ Inchide' : '+ Subnet scan'}
         </button>
         <button
           onClick={onRefresh}
           title="Reincarca topologia"
           style={{
             background: 'transparent',
-            border: '1px solid var(--border-subtle)',
-            borderRadius: 6,
-            color: 'var(--text-secondary)',
-            padding: '7px 10px',
-            fontSize: 12,
-            cursor: 'pointer',
+            border: '1px solid #252A35',
+            borderRadius: 6, color: '#8B93A3',
+            padding: '6px 10px', fontSize: 14, cursor: 'pointer',
           }}
-        >
-          ↻
-        </button>
+        >↻</button>
       </div>
 
+      {/* form */}
       {open && (
-        <form onSubmit={handleSubmit} style={{ padding: '0 14px 14px 14px' }}>
+        <form onSubmit={handleSubmit} style={{ padding: '4px 14px 14px' }}>
           <div style={{ marginBottom: 10 }}>
             <label style={labelStyle}>Subnet (CIDR)</label>
-            <input
-              style={{ ...inputStyle, width: '100%' }}
-              value={form.subnet}
-              onChange={handleChange('subnet')}
-              placeholder="192.168.100.0/24"
-              required
-            />
+            <input style={inputStyle} value={form.subnet} onChange={set('subnet')} required
+              placeholder="192.168.1.0/24" />
           </div>
 
           <div style={{ marginBottom: 10 }}>
             <label style={labelStyle}>Vendor</label>
-            <select
-              style={{ ...inputStyle, width: '100%' }}
-              value={form.vendor}
-              onChange={handleChange('vendor')}
-            >
+            <select style={inputStyle} value={form.vendor} onChange={set('vendor')}>
               <option value="JUNIPER">Juniper</option>
               <option value="ARISTA">Arista</option>
+              <option value="UNKNOWN">Auto-detect</option>
             </select>
           </div>
 
           <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
             <div style={{ flex: 1 }}>
               <label style={labelStyle}>SSH user</label>
-              <input
-                style={{ ...inputStyle, width: '100%' }}
-                value={form.sshUsername}
-                onChange={handleChange('sshUsername')}
-                required
-              />
+              <input style={inputStyle} value={form.sshUsername} onChange={set('sshUsername')} required />
             </div>
             <div style={{ flex: 1 }}>
               <label style={labelStyle}>SSH parola</label>
-              <input
-                type="password"
-                style={{ ...inputStyle, width: '100%' }}
-                value={form.sshPassword}
-                onChange={handleChange('sshPassword')}
-                required
-              />
+              <input type="password" style={inputStyle} value={form.sshPassword} onChange={set('sshPassword')} required />
             </div>
           </div>
 
           <div style={{ marginBottom: 14 }}>
-            <label style={labelStyle}>SNMP community (optional)</label>
-            <input
-              style={{ ...inputStyle, width: '100%' }}
-              value={form.snmpCommunity}
-              onChange={handleChange('snmpCommunity')}
-              placeholder="public (implicit)"
-            />
+            <label style={labelStyle}>SNMP community (implicit: public)</label>
+            <input style={inputStyle} value={form.snmpCommunity} onChange={set('snmpCommunity')}
+              placeholder="public" />
           </div>
 
-          <button
-            type="submit"
-            disabled={scanning}
-            style={{
-              width: '100%',
-              background: scanning ? 'var(--border-strong)' : 'var(--accent-info)',
-              color: '#fff',
-              border: 'none',
-              borderRadius: 6,
-              padding: '9px 0',
-              fontSize: 12,
-              fontWeight: 600,
-              cursor: scanning ? 'default' : 'pointer',
-            }}
-          >
-            {scanning ? 'Se scaneaza...' : 'Porneste scanarea + discovery'}
+          <button type="submit" disabled={scanning} style={{
+            width: '100%', border: 'none', borderRadius: 6,
+            padding: '9px 0', fontSize: 12, fontWeight: 700,
+            background: scanning ? '#252A35' : '#4D9DF2',
+            color: scanning ? '#5A6275' : '#fff',
+            cursor: scanning ? 'default' : 'pointer',
+            transition: 'all 0.2s',
+          }}>
+            {scanning ? '⟳ Se scaneaza...' : 'Porneste discovery'}
           </button>
 
           {error && (
-            <div style={{ marginTop: 10, fontSize: 11, color: 'var(--accent-error)' }}>
+            <div style={{ marginTop: 10, fontSize: 11, color: '#F2545B',
+              background: 'rgba(242,84,91,0.08)', borderRadius: 4, padding: '6px 8px' }}>
               {error}
             </div>
           )}
-
           {result && (
-            <div style={{ marginTop: 10, fontSize: 11, color: 'var(--accent-active)' }}>
-              Gasite {result.liveHostsFound} device-uri. Discovery {result.discoveryStarted ? 'pornit.' : 'nu a pornit.'}
+            <div style={{ marginTop: 10, fontSize: 11, color: '#3DDC84' }}>
+              {result.liveHostsFound} device-uri gasite.
+              {result.discoveryStarted ? ' Discovery pornit.' : ''}
             </div>
           )}
         </form>

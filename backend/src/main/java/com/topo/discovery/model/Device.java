@@ -46,6 +46,9 @@ public class Device {
     private String osVersion;
     private String serialNumber;
 
+    @Column(length = 1000)
+    private String sysDescr; // SNMP sysDescr brut - util pentru vendor detection fallback
+
     // Credentiale criptate (Jasypt, criptare la nivel de camp - vezi CredentialEncryptionService)
     private String sshUsername;
 

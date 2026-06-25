@@ -47,7 +47,7 @@ cp -r dist/* /var/www/html/
 # Configureaza nginx
 cat > /etc/nginx/sites-available/topology << 'NGINX'
 server {
-    listen 3000;
+    listen 80;
     root /var/www/html;
     index index.html;
 

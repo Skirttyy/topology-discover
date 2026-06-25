@@ -1,10 +1,8 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import ReactFlow, {
-  Background,
-  Controls,
-  MiniMap,
-  useNodesState,
-  useEdgesState,
+  Background, Controls, MiniMap,
+  useNodesState, useEdgesState,
+  addEdge,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 
@@ -16,156 +14,197 @@ import { getTopology } from '../api/client';
 
 const nodeTypes = { device: DeviceNode };
 
-// layout simplu in grid - pozitionare initiala determinista, fara
-// dependinta de o librarie externa de layout automat (suficient pt teza;
-// se poate extinde ulterior cu un algoritm force-directed / dagre)
+// layout grid simplu - pozitionare initiala
 function layoutNodes(graphNodes) {
-  const COLS = Math.ceil(Math.sqrt(graphNodes.length || 1));
-  const SPACING_X = 240;
-  const SPACING_Y = 160;
-
+  const COLS = Math.max(1, Math.ceil(Math.sqrt(graphNodes.length || 1)));
   return graphNodes.map((node, idx) => ({
     id: node.id,
     type: 'device',
-    position: {
-      x: (idx % COLS) * SPACING_X,
-      y: Math.floor(idx / COLS) * SPACING_Y,
-    },
+    position: { x: (idx % COLS) * 260, y: Math.floor(idx / COLS) * 200 },
     data: {
       label: node.label,
       vendor: node.vendor,
       status: node.status,
       managementIp: node.managementIp,
       model: node.model,
+      osVersion: node.osVersion,
+      sysDescr: node.sysDescr,
     },
+    // animatie de intrare
+    style: { animation: 'nodeAppear 0.4s ease forwards' },
   }));
 }
 
-function mapEdges(graphEdges) {
-  return graphEdges.map((edge) => ({
+function mapEdge(edge) {
+  return {
     id: edge.id,
     source: edge.source,
     target: edge.target,
     label: edge.sourceInterface && edge.targetInterface
-      ? `${edge.sourceInterface} ↔ ${edge.targetInterface}`
-      : undefined,
-    labelStyle: { fill: 'var(--text-tertiary)', fontSize: 10, fontFamily: 'var(--font-mono)' },
-    labelBgStyle: { fill: 'var(--bg-app)', fillOpacity: 0.8 },
+      ? `${edge.sourceInterface} ↔ ${edge.targetInterface}` : undefined,
+    labelStyle: { fill: '#5A6275', fontSize: 10, fontFamily: "'JetBrains Mono', monospace" },
+    labelBgStyle: { fill: '#0B0E14', fillOpacity: 0.85 },
     style: {
       stroke: edge.discoverySource === 'LLDP' ? '#3DDC84' : '#5A6275',
-      strokeWidth: 1.5,
-      strokeDasharray: edge.discoverySource === 'ARP_MAC_INFERENCE' ? '4 3' : undefined,
+      strokeWidth: 1.8,
+      strokeDasharray: edge.discoverySource === 'SNMP_ARP' ? '5 3' : undefined,
     },
     animated: false,
-  }));
+  };
 }
 
 export default function TopologyGraph() {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
-  const [selectedDeviceId, setSelectedDeviceId] = useState(null);
+  const [selectedId, setSelectedId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
 
-  const refresh = useCallback(() => {
+  // ref cu nodesMap pentru update rapid fara re-layout
+  const nodesMapRef = useRef({});
+
+  const loadTopology = useCallback(() => {
     setLoading(true);
     setLoadError(null);
     getTopology()
       .then((graph) => {
-        setNodes(layoutNodes(graph.nodes || []));
-        setEdges(mapEdges(graph.edges || []));
+        const mapped = layoutNodes(graph.nodes || []);
+        // rebuildam nodesMap
+        nodesMapRef.current = {};
+        mapped.forEach(n => { nodesMapRef.current[n.id] = n; });
+        setNodes(mapped);
+        setEdges((graph.edges || []).map(mapEdge));
       })
-      .catch((e) => setLoadError(e.message || 'Eroare la incarcarea topologiei'))
+      .catch((e) => setLoadError(e.message || 'Eroare la incarcare'))
       .finally(() => setLoading(false));
   }, [setNodes, setEdges]);
 
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
+  useEffect(() => { loadTopology(); }, [loadTopology]);
 
-  const handleNodeClick = useCallback((_event, node) => {
-    setSelectedDeviceId(node.id);
+  // handler pentru NODE_DISCOVERED / NODE_UPDATED din WebSocket
+  const handleNodeEvent = useCallback((node, type) => {
+    if (!node?.id) return;
+    setNodes(prev => {
+      const existing = prev.find(n => n.id === node.id);
+      if (existing) {
+        // update date fara sa schimbam pozitia
+        return prev.map(n => n.id === node.id
+          ? { ...n, data: { ...n.data, ...node, label: node.label || node.managementIp } }
+          : n);
+      } else {
+        // nod nou - il adaugam cu animatie
+        const idx = prev.length;
+        const COLS = Math.max(1, Math.ceil(Math.sqrt(idx + 1)));
+        const newNode = {
+          id: node.id,
+          type: 'device',
+          position: { x: (idx % COLS) * 260, y: Math.floor(idx / COLS) * 200 },
+          data: { ...node, label: node.label || node.managementIp },
+          style: { animation: 'nodeAppear 0.5s cubic-bezier(0.34,1.56,0.64,1) forwards' },
+        };
+        nodesMapRef.current[node.id] = newNode;
+        return [...prev, newNode];
+      }
+    });
+  }, [setNodes]);
+
+  // handler pentru LINK_DISCOVERED din WebSocket
+  const handleLinkEvent = useCallback((edge) => {
+    if (!edge?.id) return;
+    setEdges(prev => {
+      if (prev.find(e => e.id === edge.id)) return prev;
+      return [...prev, { ...mapEdge(edge), animated: true }];
+    });
+    // dupa 2s scoatem animatia de pe link
+    setTimeout(() => {
+      setEdges(prev => prev.map(e => e.id === edge.id ? { ...e, animated: false } : e));
+    }, 2000);
+  }, [setEdges]);
+
+  const handleNodeClick = useCallback((_, node) => {
+    setSelectedId(node.id);
   }, []);
 
-  const handleDiscoveryEvent = useCallback((event) => {
-    if (event.type === 'COMPLETED') {
-      refresh();
-    }
-  }, [refresh]);
-
-  const isEmpty = useMemo(() => nodes.length === 0 && !loading, [nodes, loading]);
+  const isEmpty = nodes.length === 0 && !loading;
 
   return (
-    <div style={{ width: '100%', height: '100%', position: 'relative', background: 'var(--bg-app)' }}>
+    <div style={{ width: '100%', height: '100%', position: 'relative', background: '#0B0E14' }}>
+      <style>{`
+        @keyframes nodeAppear {
+          from { opacity: 0; transform: scale(0.7) translateY(10px); }
+          to   { opacity: 1; transform: scale(1) translateY(0); }
+        }
+      `}</style>
+
       <ReactFlow
         nodes={nodes}
         edges={edges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onNodeClick={handleNodeClick}
+        onPaneClick={() => setSelectedId(null)}
         nodeTypes={nodeTypes}
         fitView
+        fitViewOptions={{ padding: 0.2 }}
         proOptions={{ hideAttribution: true }}
+        minZoom={0.2}
+        maxZoom={2}
       >
-        <Background color="#1A1F2B" gap={24} size={1} />
-        <Controls
-          style={{
-            button: { background: 'var(--bg-panel)', color: 'var(--text-primary)', borderColor: 'var(--border-subtle)' },
-          }}
-        />
+        <Background color="#1A1F2B" gap={28} size={1} />
+        <Controls style={{
+          background: '#131720',
+          border: '1px solid #252A35',
+          borderRadius: 8,
+        }} />
         <MiniMap
-          nodeColor={(n) => {
-            const status = n.data?.status;
-            if (status === 'ACTIVE') return '#3DDC84';
-            if (status === 'ERROR') return '#F2545B';
-            if (status === 'UNREACHABLE') return '#F2A93B';
+          nodeColor={n => {
+            const s = n.data?.status;
+            if (s === 'ACTIVE') return '#3DDC84';
+            if (s === 'ERROR') return '#F2545B';
+            if (s === 'UNREACHABLE') return '#F2A93B';
+            if (s === 'POLLING') return '#4D9DF2';
             return '#5A6275';
           }}
-          maskColor="rgba(11,14,20,0.7)"
-          style={{ background: 'var(--bg-panel)' }}
+          maskColor="rgba(11,14,20,0.75)"
+          style={{ background: '#131720', border: '1px solid #252A35', borderRadius: 8 }}
         />
       </ReactFlow>
 
-      <DiscoveryControls onScanComplete={refresh} onRefresh={refresh} />
-      <DiscoveryStatusBar onDiscoveryEvent={handleDiscoveryEvent} />
+      <DiscoveryControls onScanComplete={loadTopology} onRefresh={loadTopology} />
 
-      {loading && (
-        <CenterMessage>Se incarca topologia...</CenterMessage>
-      )}
+      <DiscoveryStatusBar
+        onNodeEvent={handleNodeEvent}
+        onLinkEvent={handleLinkEvent}
+        onCompleted={loadTopology}
+      />
 
-      {loadError && !loading && (
-        <CenterMessage error>Nu am putut incarca topologia: {loadError}</CenterMessage>
-      )}
-
+      {loading && <Overlay>Se incarca topologia...</Overlay>}
+      {loadError && !loading && <Overlay error>Eroare: {loadError}</Overlay>}
       {isEmpty && !loadError && (
-        <CenterMessage>
-          Nicio topologie inca. Foloseste "Scaneaza subnet" pentru a porni discovery-ul.
-        </CenterMessage>
+        <Overlay>
+          Nicio topologie. Foloseste "+ Subnet scan" pentru a porni discovery-ul.
+        </Overlay>
       )}
 
-      {selectedDeviceId && (
+      {selectedId && (
         <DeviceDetailsPanel
-          deviceId={selectedDeviceId}
-          onClose={() => setSelectedDeviceId(null)}
+          deviceId={selectedId}
+          onClose={() => setSelectedId(null)}
         />
       )}
     </div>
   );
 }
 
-function CenterMessage({ children, error }) {
+function Overlay({ children, error }) {
   return (
     <div style={{
-      position: 'absolute',
-      top: '50%',
-      left: '50%',
+      position: 'absolute', top: '50%', left: '50%',
       transform: 'translate(-50%, -50%)',
-      color: error ? 'var(--accent-error)' : 'var(--text-tertiary)',
-      fontFamily: 'var(--font-mono)',
-      fontSize: 13,
-      textAlign: 'center',
-      pointerEvents: 'none',
-      maxWidth: 360,
+      color: error ? '#F2545B' : '#5A6275',
+      fontFamily: "'JetBrains Mono', monospace",
+      fontSize: 13, textAlign: 'center',
+      pointerEvents: 'none', maxWidth: 360,
     }}>
       {children}
     </div>

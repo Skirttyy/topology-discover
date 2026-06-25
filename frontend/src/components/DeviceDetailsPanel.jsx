@@ -132,6 +132,24 @@ export default function DeviceDetailsPanel({ deviceId, onClose }) {
               <Field label="Serial" value={device.serialNumber} />
             </Section>
 
+            {device.sysDescr && (
+              <Section title="System Description (SNMP)">
+                <div style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 11,
+                  color: 'var(--text-secondary)',
+                  background: 'var(--bg-panel-raised)',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 6,
+                  padding: 10,
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                }}>
+                  {device.sysDescr}
+                </div>
+              </Section>
+            )}
+
             <Section title="Discovery">
               <Field label="Tip" value={device.seedDevice ? 'Seed (adaugat manual/scan)' : 'Descoperit din topologie'} />
               <Field label="Prima descoperire" value={formatDate(device.firstDiscoveredAt)} />

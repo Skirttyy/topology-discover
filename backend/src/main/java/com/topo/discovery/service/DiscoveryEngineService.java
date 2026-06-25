@@ -2,6 +2,7 @@ package com.topo.discovery.service;
 
 import com.topo.discovery.collector.SnmpCollector;
 import com.topo.discovery.collector.SshCommandExecutor;
+import com.topo.discovery.dto.TopologyGraphResponse;
 import com.topo.discovery.model.*;
 import com.topo.discovery.repository.DeviceRepository;
 import com.topo.discovery.repository.LinkRepository;
@@ -17,27 +18,18 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Motorul central de discovery: pornind de la un (sau mai multe) seed
- * device(s), face BFS (Breadth-First Search) pe graful retelei.
+ * Motor BFS de discovery.
  *
- * Algoritm (pe scurt, pt documentatia tezei):
- *   1. coada <- [seed devices]
- *   2. cat timp coada nu e goala si nu am depasit max_devices/max_depth:
- *        device <- coada.pop()
- *        daca device.status != ACTIVE:
- *            bootstrap (activeaza SNMP+LLDP daca lipsesc)
- *            poll (SSH show version/hostname + SNMP walk interfete)
- *        vecini <- LLDP walk(device) + ARP walk(device) [fallback]
- *        pentru fiecare vecin:
- *            daca vecinul nu e cunoscut -> creeaza Device nou (status DISCOVERED), adauga in coada
- *            creeaza/actualizeaza Link intre device si vecin
- *
- * E un BFS clasic pe un graf necunoscut a priori, descoperit incremental -
- * exact genul de aplicatie practica a teoriei grafurilor care merge bine
- * intr-o teza de an la Informatica Aplicata.
+ * Fix-uri fata de versiunea anterioara:
+ * 1. NullPointerException in ConcurrentHashMap (nu punem valori null)
+ * 2. Vendor detection prin SNMP sysDescr (fallback pentru orice device)
+ * 3. Link-uri extrase corect din LLDP - rezolvam vecinii prin hostname match
+ * 4. Events WebSocket progresive (NODE_DISCOVERED, LINK_DISCOVERED)
+ * 5. Fara bootstrap config - SNMP/LLDP sunt deja active
  */
 @Service
 @RequiredArgsConstructor
@@ -48,7 +40,6 @@ public class DiscoveryEngineService {
     private final NetworkInterfaceRepository interfaceRepository;
     private final LinkRepository linkRepository;
     private final DeviceService deviceService;
-    private final BootstrapConfigService bootstrapConfigService;
     private final SshCommandExecutor sshExecutor;
     private final SnmpCollector snmpCollector;
     private final VendorAdapterFactory vendorAdapterFactory;
@@ -60,39 +51,51 @@ public class DiscoveryEngineService {
     @Value("${discovery.bfs.max-devices}")
     private int maxDevices;
 
+    @Value("${discovery.snmp.community}")
+    private String defaultCommunity;
+
     private static final int SSH_PORT = 22;
 
-    // status global simplu al ultimei rulari, expus prin API pentru frontend (polling de progres)
-    private final Map<String, Object> lastRunStatus = new ConcurrentHashMap<>();
+    // starea ultimei rulari - FARA valori null (ConcurrentHashMap nu accepta null)
+    private final AtomicBoolean running = new AtomicBoolean(false);
+    private final AtomicInteger devicesProcessed = new AtomicInteger(0);
+    private volatile String lastError = "";
+    private volatile String startedAt = "";
+    private volatile String finishedAt = "";
 
-    /**
-     * Porneste discovery-ul asincron de la o lista de device-uri seed.
-     * Ruleaza pe alt thread (vezi @EnableAsync din DiscoveryApplication)
-     * ca sa nu blocheze request-ul HTTP - poate dura minute intregi pe un
-     * lab mare.
-     */
     @Async
     public void runDiscoveryAsync(List<Long> seedDeviceIds) {
-        lastRunStatus.put("running", true);
-        lastRunStatus.put("startedAt", LocalDateTime.now().toString());
-        lastRunStatus.put("devicesProcessed", 0);
-        lastRunStatus.put("error", null);
+        if (running.getAndSet(true)) {
+            log.warn("Discovery deja in curs, ignoram request-ul nou");
+            return;
+        }
+        devicesProcessed.set(0);
+        lastError = "";
+        startedAt = LocalDateTime.now().toString();
+        finishedAt = "";
 
         try {
             runBfs(seedDeviceIds);
-            lastRunStatus.put("running", false);
-            lastRunStatus.put("finishedAt", LocalDateTime.now().toString());
-            progressNotifier.notifyCompleted();
+            finishedAt = LocalDateTime.now().toString();
+            int totalLinks = linkRepository.findAll().size();
+            progressNotifier.notifyCompleted(devicesProcessed.get(), totalLinks);
         } catch (Exception e) {
-            log.error("Discovery BFS a esuat: {}", e.getMessage(), e);
-            lastRunStatus.put("running", false);
-            lastRunStatus.put("error", e.getMessage());
-            progressNotifier.notifyError(e.getMessage());
+            log.error("Discovery BFS esuat: {}", e.getMessage(), e);
+            lastError = e.getMessage() != null ? e.getMessage() : "Eroare necunoscuta";
+            progressNotifier.notifyError(lastError);
+        } finally {
+            running.set(false);
         }
     }
 
     public Map<String, Object> getLastRunStatus() {
-        return new HashMap<>(lastRunStatus);
+        Map<String, Object> status = new LinkedHashMap<>();
+        status.put("running", running.get());
+        status.put("devicesProcessed", devicesProcessed.get());
+        status.put("startedAt", startedAt);
+        status.put("finishedAt", finishedAt);
+        status.put("lastError", lastError);
+        return status;
     }
 
     private void runBfs(List<Long> seedDeviceIds) {
@@ -101,218 +104,246 @@ public class DiscoveryEngineService {
         Map<Long, Integer> depthMap = new HashMap<>();
         seedDeviceIds.forEach(id -> depthMap.put(id, 0));
 
-        int processedCount = 0;
-
-        while (!queue.isEmpty() && processedCount < maxDevices) {
+        while (!queue.isEmpty() && devicesProcessed.get() < maxDevices) {
             Long deviceId = queue.poll();
-            if (visited.contains(deviceId)) {
-                continue;
-            }
+            if (visited.contains(deviceId)) continue;
             visited.add(deviceId);
 
             int depth = depthMap.getOrDefault(deviceId, 0);
-            if (depth > maxDepth) {
-                log.info("Adancime maxima ({}) atinsa, opresc explorarea pe ramura asta", maxDepth);
-                continue;
-            }
+            if (depth > maxDepth) continue;
 
             Device device = deviceRepository.findById(deviceId).orElse(null);
             if (device == null) continue;
 
-            log.info("BFS: procesez device {} (depth={})", device.getManagementIp(), depth);
-            progressNotifier.notifyDeviceProcessing(device.getManagementIp());
+            log.info("BFS procesez: {} (depth={})", device.getManagementIp(), depth);
+            progressNotifier.notifyProcessing(device.getManagementIp(), "POLLING");
 
-            List<Device> newNeighbors = processDevice(device);
+            List<Device> neighbors = processDevice(device);
+            devicesProcessed.incrementAndGet();
 
-            for (Device neighbor : newNeighbors) {
+            for (Device neighbor : neighbors) {
                 if (!visited.contains(neighbor.getId())) {
                     queue.add(neighbor.getId());
                     depthMap.put(neighbor.getId(), depth + 1);
                 }
             }
-
-            processedCount++;
-            lastRunStatus.put("devicesProcessed", processedCount);
         }
 
-        log.info("BFS finalizat. Total device-uri procesate: {}", processedCount);
+        log.info("BFS finalizat. Procesate: {} device-uri", devicesProcessed.get());
     }
 
-    /**
-     * Proceseaza un singur device: bootstrap (daca e nevoie), polling
-     * (hostname/version/interfete), apoi descopera vecinii (LLDP + ARP).
-     *
-     * @return lista de device-uri noi descoperite (pentru a fi adaugate in coada BFS)
-     */
     @Transactional
     public List<Device> processDevice(Device device) {
-        List<Device> newlyDiscovered = new ArrayList<>();
-        String sshPassword = deviceService.decryptSshPassword(device);
+        List<Device> newNeighbors = new ArrayList<>();
+        String sshPassword  = deviceService.decryptSshPassword(device);
         String snmpCommunity = deviceService.decryptSnmpCommunity(device);
 
         try {
-            // Pasul 1: bootstrap config (activeaza SNMP+LLDP daca lipsesc) - idempotent
-            device.setStatus(DeviceStatus.CONFIGURING);
+            device.setStatus(DeviceStatus.POLLING);
             deviceRepository.save(device);
-            boolean bootstrapOk = bootstrapConfigService.bootstrap(device, sshPassword, snmpCommunity);
-            if (!bootstrapOk) {
-                device.setStatus(DeviceStatus.ERROR);
-                deviceRepository.save(device);
-                return newlyDiscovered;
+
+            // Pasul 1: detectie vendor prin SNMP sysDescr (functioneaza pe orice device)
+            String sysDescr = snmpCollector.getSysDescr(device.getManagementIp(), snmpCommunity);
+            if (sysDescr != null) {
+                device.setSysDescr(sysDescr.length() > 1000 ? sysDescr.substring(0, 1000) : sysDescr);
+                // daca vendor-ul era UNKNOWN, incearca sa-l detecteze din sysDescr
+                if (device.getVendor() == Vendor.UNKNOWN || device.getVendor() == null) {
+                    Vendor detected = Vendor.detect(sysDescr);
+                    device.setVendor(detected);
+                    log.info("Vendor detectat pentru {} din sysDescr: {}", device.getManagementIp(), detected);
+                }
             }
 
-            // Pasul 2: polling de bază (hostname, model, OS version) prin SSH
-            device.setStatus(DeviceStatus.POLLING);
-            pollBasicInfo(device, sshPassword);
+            // hostname din SNMP (mai rapid si mai fiabil decat SSH pe unele device-uri)
+            String sysName = snmpCollector.getSysName(device.getManagementIp(), snmpCommunity);
+            if (sysName != null && !sysName.isBlank()) {
+                device.setHostname(sysName.trim());
+            }
 
-            // Pasul 3: polling interfete prin SNMP
+            // Pasul 2: SSH pentru model/version (doar daca vendor e cunoscut)
+            if (device.getVendor() != Vendor.UNKNOWN && sshPassword != null) {
+                pollViaSsh(device, sshPassword);
+            }
+
+            // Pasul 3: interfete prin SNMP
             pollInterfaces(device, snmpCommunity);
 
-            // Pasul 4: descoperire vecini - LLDP intai (sursa principala)
-            List<SnmpCollector.LldpNeighbor> lldpNeighbors = snmpCollector.walkLldpNeighbors(
-                    device.getManagementIp(), snmpCommunity);
-
-            for (SnmpCollector.LldpNeighbor neighbor : lldpNeighbors) {
-                Device neighborDevice = resolveOrCreateNeighbor(neighbor, device, sshPassword, snmpCommunity);
-                if (neighborDevice != null && neighborDevice.getStatus() == DeviceStatus.DISCOVERED) {
-                    newlyDiscovered.add(neighborDevice);
-                }
-                createOrUpdateLink(device, neighbor, neighborDevice);
-            }
-
-            // Pasul 5: fallback ARP/MAC - completeaza date L3 (nu creeaza device-uri noi,
-            // doar imbogateste interfetele cu IP-uri daca lipsesc)
-            enrichWithArpData(device, snmpCommunity);
-
+            // salveaza device-ul cu toate datele noi si notifica frontend-ul
             device.setStatus(DeviceStatus.ACTIVE);
             device.setLastPolledAt(LocalDateTime.now());
             device.setLastError(null);
-            deviceRepository.save(device);
+            device = deviceRepository.save(device);
+
+            progressNotifier.notifyNodeUpdated(GraphBuilderService.toNode(device));
+
+            // Pasul 4: LLDP neighbors - sursa principala de link-uri
+            List<SnmpCollector.LldpNeighbor> lldpNeighbors =
+                    snmpCollector.walkLldpNeighbors(device.getManagementIp(), snmpCommunity);
+
+            log.info("LLDP: {} vecini pe {}", lldpNeighbors.size(), device.getManagementIp());
+
+            for (SnmpCollector.LldpNeighbor neighbor : lldpNeighbors) {
+                Device neighborDevice = resolveOrCreateNeighbor(neighbor, device, sshPassword, snmpCommunity);
+                createLink(device, neighbor, neighborDevice);
+                if (neighborDevice != null && neighborDevice.getStatus() == DeviceStatus.DISCOVERED) {
+                    newNeighbors.add(neighborDevice);
+                }
+            }
+
+            // Pasul 5: ARP fallback - imbogateste interfetele cu IP-uri
+            enrichWithArp(device, snmpCommunity);
 
         } catch (Exception e) {
-            log.error("Eroare la procesarea device-ului {}: {}", device.getManagementIp(), e.getMessage());
+            log.error("Eroare la procesarea {}: {}", device.getManagementIp(), e.getMessage());
             device.setStatus(DeviceStatus.ERROR);
-            device.setLastError(e.getMessage());
+            device.setLastError(e.getMessage() != null ? e.getMessage() : "Eroare necunoscuta");
             deviceRepository.save(device);
+            progressNotifier.notifyNodeUpdated(GraphBuilderService.toNode(device));
         }
 
-        return newlyDiscovered;
+        return newNeighbors;
     }
 
-    private void pollBasicInfo(Device device, String sshPassword) {
-        VendorAdapter adapter = vendorAdapterFactory.getAdapter(device.getVendor());
+    private void pollViaSsh(Device device, String sshPassword) {
+        try {
+            VendorAdapter adapter = vendorAdapterFactory.getAdapter(device.getVendor());
+            String versionOutput = sshExecutor.executeCommand(
+                    device.getManagementIp(), SSH_PORT,
+                    device.getSshUsername(), sshPassword,
+                    adapter.getShowVersionCommand());
 
-        String hostnameOutput = sshExecutor.executeCommand(
-                device.getManagementIp(), SSH_PORT, device.getSshUsername(), sshPassword,
-                adapter.getShowHostnameCommand());
-        device.setHostname(extractHostname(hostnameOutput, device.getManagementIp()));
-
-        String versionOutput = sshExecutor.executeCommand(
-                device.getManagementIp(), SSH_PORT, device.getSshUsername(), sshPassword,
-                adapter.getShowVersionCommand());
-        VendorAdapter.ParsedVersionInfo versionInfo = adapter.parseVersionOutput(versionOutput);
-        device.setModel(versionInfo.model());
-        device.setOsVersion(versionInfo.osVersion());
-        if (versionInfo.serialNumber() != null) {
-            device.setSerialNumber(versionInfo.serialNumber());
-        }
-
-        deviceRepository.save(device);
-    }
-
-    private String extractHostname(String rawOutput, String fallbackIp) {
-        if (rawOutput == null || rawOutput.isBlank()) return fallbackIp;
-        // incearca sa extraga un singur token rezonabil din output; fallback la IP daca esueaza
-        String trimmed = rawOutput.trim().replaceAll("(?i)host-?name", "").replaceAll("[;\"]", "").trim();
-        String[] lines = trimmed.split("\\R");
-        for (String line : lines) {
-            String candidate = line.trim();
-            if (!candidate.isEmpty() && !candidate.startsWith("%") && !candidate.startsWith("set")) {
-                return candidate.replaceAll("^set\\s+system\\s+host-name\\s+", "");
+            VendorAdapter.ParsedVersionInfo info = adapter.parseVersionOutput(versionOutput);
+            if (info.hostname() != null && device.getHostname() == null) {
+                device.setHostname(info.hostname());
             }
+            if (info.model() != null) device.setModel(info.model());
+            if (info.osVersion() != null) device.setOsVersion(info.osVersion());
+            if (info.serialNumber() != null) device.setSerialNumber(info.serialNumber());
+        } catch (Exception e) {
+            log.warn("SSH poll esuat pe {} (non-fatal): {}", device.getManagementIp(), e.getMessage());
         }
-        return fallbackIp;
     }
 
     private void pollInterfaces(Device device, String snmpCommunity) {
-        List<SnmpCollector.InterfaceEntry> entries = snmpCollector.walkInterfaces(
-                device.getManagementIp(), snmpCommunity);
+        List<SnmpCollector.InterfaceEntry> entries =
+                snmpCollector.walkInterfaces(device.getManagementIp(), snmpCommunity);
 
         for (SnmpCollector.InterfaceEntry entry : entries) {
-            if (entry.getName() == null) continue;
+            if (entry.getName() == null || entry.getName().isBlank()) continue;
 
-            NetworkInterface iface = interfaceRepository.findByDeviceAndName(device, entry.getName())
+            NetworkInterface iface = interfaceRepository
+                    .findByDeviceAndName(device, entry.getName())
                     .orElse(NetworkInterface.builder().device(device).name(entry.getName()).build());
 
             iface.setMacAddress(entry.getMacAddress());
             iface.setAdminStatus(entry.getAdminStatus());
             iface.setOperStatus(entry.getOperStatus());
-            if (entry.getSpeedBps() != null) {
-                iface.setSpeedMbps(entry.getSpeedBps() / 1_000_000);
-            }
+            iface.setSpeedMbps(entry.getSpeedMbps());
+            iface.setDescription(entry.getDescription());
+            if (entry.getIpAddress() != null) iface.setIpAddress(entry.getIpAddress());
+            if (entry.getPrefixLength() != null) iface.setPrefixLength(entry.getPrefixLength());
 
             interfaceRepository.save(iface);
         }
     }
 
     /**
-     * Pentru un vecin LLDP, incearca sa-l lege de un Device existent (cautat
-     * dupa hostname). Daca nu exista, NU cream automat un Device fara IP
-     * valid (LLDP-MIB standard nu garanteaza IP-ul de management al
-     * vecinului in tabelele de baza folosite aici) - legatura ramane
-     * inregistrata cu metadate (hostname/chassis remote) pentru a fi
-     * rezolvata manual sau printr-un scan de subnet ulterior.
+     * Rezolva un vecin LLDP la un Device din DB sau il creeaza nou.
      *
-     * Nota pt teza: aceasta e o limitare cunoscuta documentata, cu mentiunea
-     * ca o extensie ar putea interoga si lldpRemManAddrTable pentru IP-ul
-     * de management al vecinului direct din MIB.
+     * Strategia:
+     * 1. Cauta dupa hostname (sysName) - cel mai fiabil
+     * 2. Cauta dupa chassis ID (MAC) in interfetele cunoscute
+     * 3. Daca nu gaseste, creeaza un Device nou cu IP necunoscut (va fi rezolvat
+     *    cand scan-ul de subnet il va gasi, sau din ARP)
      */
-    private Device resolveOrCreateNeighbor(SnmpCollector.LldpNeighbor neighbor, Device sourceDevice,
-                                             String sshPassword, String snmpCommunity) {
-        if (neighbor.getRemoteSystemName() == null) {
-            return null;
-        }
+    private Device resolveOrCreateNeighbor(SnmpCollector.LldpNeighbor neighbor,
+                                            Device sourceDevice,
+                                            String sshPassword,
+                                            String snmpCommunity) {
+        if (neighbor.getRemoteSystemName() == null) return null;
+        String remoteName = neighbor.getRemoteSystemName().trim();
 
-        Optional<Device> existing = deviceRepository.findAll().stream()
-                .filter(d -> neighbor.getRemoteSystemName().equalsIgnoreCase(d.getHostname()))
+        // 1. cauta dupa hostname exact
+        Optional<Device> byHostname = deviceRepository.findAll().stream()
+                .filter(d -> remoteName.equalsIgnoreCase(d.getHostname())
+                          || remoteName.equalsIgnoreCase(d.getManagementIp()))
                 .findFirst();
+        if (byHostname.isPresent()) return byHostname.get();
 
-        if (existing.isPresent()) {
-            return existing.get();
+        // 2. cauta dupa chassis MAC in interfete
+        if (neighbor.getRemoteChassisId() != null) {
+            Optional<NetworkInterface> byMac =
+                    interfaceRepository.findByMacAddress(neighbor.getRemoteChassisId());
+            if (byMac.isPresent()) return byMac.get().getDevice();
         }
 
-        log.info("Vecin LLDP nou descoperit: {} (chassis={}), fara IP rezolvat inca",
-                neighbor.getRemoteSystemName(), neighbor.getRemoteChassisId());
+        // 3. device nou - IP necunoscut, hostname din LLDP
+        // Il cream ca placeholder cu IP "lldp:<hostname>" pana cand scan-ul il rezolva
+        String placeholderIp = "lldp:" + remoteName;
+        Optional<Device> existing = deviceRepository.findByManagementIp(placeholderIp);
+        if (existing.isPresent()) return existing.get();
 
-        return null;
+        log.info("Vecin LLDP nou necunoscut: {} - cream placeholder", remoteName);
+        Device placeholder = Device.builder()
+                .managementIp(placeholderIp)
+                .hostname(remoteName)
+                .vendor(Vendor.UNKNOWN)
+                .status(DeviceStatus.DISCOVERED)
+                .seedDevice(false)
+                .sshUsername(sourceDevice.getSshUsername())
+                .sshPasswordEncrypted(sourceDevice.getSshPasswordEncrypted())
+                .snmpCommunityEncrypted(sourceDevice.getSnmpCommunityEncrypted())
+                .build();
+        placeholder = deviceRepository.save(placeholder);
+
+        // notifica frontend-ul imediat de nodul nou
+        progressNotifier.notifyNodeDiscovered(GraphBuilderService.toNode(placeholder));
+        return placeholder;
     }
 
-    private void createOrUpdateLink(Device localDevice, SnmpCollector.LldpNeighbor neighbor, Device remoteDevice) {
+    private void createLink(Device localDevice, SnmpCollector.LldpNeighbor neighbor, Device remoteDevice) {
+        // evitam duplicate: acelasi local+remote+localPort
+        boolean exists = linkRepository.findByLocalDevice(localDevice).stream()
+                .anyMatch(l -> l.getRemoteSystemName() != null
+                        && l.getRemoteSystemName().equals(neighbor.getRemoteSystemName())
+                        && Objects.equals(l.getLocalInterfaceName(), neighbor.getLocalPortId()));
+        if (exists) return;
+
         Link link = Link.builder()
                 .localDevice(localDevice)
-                .localInterfaceName(neighbor.getRemotePortId())
+                .localInterfaceName(neighbor.getLocalPortId())
                 .remoteDevice(remoteDevice)
                 .remoteInterfaceName(neighbor.getRemotePortId())
                 .remoteSystemName(neighbor.getRemoteSystemName())
                 .remoteChassisId(neighbor.getRemoteChassisId())
                 .source(Link.DiscoverySource.LLDP)
                 .build();
-        linkRepository.save(link);
+        link = linkRepository.save(link);
+
+        // notifica frontend daca avem ambele capete cunoscute
+        if (remoteDevice != null) {
+            progressNotifier.notifyLinkDiscovered(
+                    TopologyGraphResponse.GraphEdge.builder()
+                            .id("link-" + link.getId())
+                            .source(String.valueOf(localDevice.getId()))
+                            .target(String.valueOf(remoteDevice.getId()))
+                            .sourceInterface(neighbor.getLocalPortId())
+                            .targetInterface(neighbor.getRemotePortId())
+                            .discoverySource("LLDP")
+                            .build()
+            );
+        }
     }
 
-    /**
-     * Fallback L3: pentru fiecare IP gasit in ARP table, daca corespunde
-     * unui Device deja cunoscut (prin MAC matching pe interfetele lui),
-     * completam informatia. Util cand LLDP nu da rezultate complete.
-     */
-    private void enrichWithArpData(Device device, String snmpCommunity) {
-        List<SnmpCollector.ArpEntry> arpEntries = snmpCollector.walkArpTable(
-                device.getManagementIp(), snmpCommunity);
+    private void enrichWithArp(Device device, String snmpCommunity) {
+        List<SnmpCollector.ArpEntry> arpEntries =
+                snmpCollector.walkArpTable(device.getManagementIp(), snmpCommunity);
 
-        for (SnmpCollector.ArpEntry arpEntry : arpEntries) {
-            interfaceRepository.findByMacAddress(arpEntry.getMacAddress()).ifPresent(iface -> {
+        for (SnmpCollector.ArpEntry arp : arpEntries) {
+            if (arp.getMacAddress() == null) continue;
+            interfaceRepository.findByMacAddress(arp.getMacAddress()).ifPresent(iface -> {
                 if (iface.getIpAddress() == null) {
-                    iface.setIpAddress(arpEntry.getIpAddress());
+                    iface.setIpAddress(arp.getIpAddress());
                     interfaceRepository.save(iface);
                 }
             });
