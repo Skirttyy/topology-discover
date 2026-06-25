@@ -106,8 +106,6 @@ function DeviceNode({ data, selected }) {
       }}>
         <Handle type="target" position={Position.Top}    style={H} />
         <Handle type="source" position={Position.Bottom} style={H} />
-        <Handle type="target" position={Position.Left}   style={H} />
-        <Handle type="source" position={Position.Right}  style={H} />
         <div style={{ padding: '8px 12px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
             <IconUnknown color="#5A6275"/>
@@ -145,8 +143,6 @@ function DeviceNode({ data, selected }) {
       }}>
         <Handle type="target" position={Position.Top}    style={H} />
         <Handle type="source" position={Position.Bottom} style={H} />
-        <Handle type="target" position={Position.Left}   style={H} />
-        <Handle type="source" position={Position.Right}  style={H} />
         <div style={{ padding: '10px 14px 11px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 6 }}>
             <IconWan color="#F2A93B"/>
@@ -192,8 +188,6 @@ function DeviceNode({ data, selected }) {
       }}>
         <Handle type="target" position={Position.Top}    style={H} />
         <Handle type="source" position={Position.Bottom} style={H} />
-        <Handle type="target" position={Position.Left}   style={H} />
-        <Handle type="source" position={Position.Right}  style={H} />
         <div style={{ padding: '10px 14px 12px', paddingLeft: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 7 }}>
             <IconRouter color={vcolor}/>

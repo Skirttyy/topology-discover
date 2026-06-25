@@ -98,7 +98,15 @@ public class DiscoveryEngineService {
             resolvePlaceholders();
 
             finishedAt = LocalDateTime.now().toString();
-            int totalLinks = linkRepository.findAll().size();
+            // Numaram perechile unice de device-uri (dedup bidirectional, ca in GraphBuilder)
+            long totalLinks = linkRepository.findAll().stream()
+                    .filter(l -> l.getLocalDevice() != null && l.getRemoteDevice() != null)
+                    .map(l -> {
+                        long a = l.getLocalDevice().getId(), b = l.getRemoteDevice().getId();
+                        return Math.min(a, b) + "-" + Math.max(a, b);
+                    })
+                    .distinct()
+                    .count();
             if (stopRequested.get()) {
                 log.info("Discovery oprit manual dupa {} device-uri", devicesProcessed.get());
                 progressNotifier.notifyStopped(devicesProcessed.get(), totalLinks);
@@ -145,8 +153,10 @@ public class DiscoveryEngineService {
                 List<Future<List<Device>>> futures = new ArrayList<>();
                 for (Long deviceId : currentLevel) {
                     futures.add(bfsPool.submit(() -> {
+                        // verificam stop la inceputul fiecarui task — nu doar intre niveluri
+                        if (stopRequested.get()) return List.<Device>of();
                         Device device = deviceRepository.findById(deviceId).orElse(null);
-                        if (device == null) return List.of();
+                        if (device == null) return List.<Device>of();
                         log.info("BFS procesez: {} (depth={})", device.getManagementIp(), currentDepth);
                         progressNotifier.notifyProcessing(device.getManagementIp(), "POLLING");
                         List<Device> neighbors = processDevice(device);

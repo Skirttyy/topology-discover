@@ -157,10 +157,11 @@ function mkNode(raw, position) {
   };
 }
 
-// Strip prefix SNMP ifIndex: "529 :: ge-0/0/1" → "ge-0/0/1", "526" → "526"
+// Strip prefix SNMP: "529 :: ge-0/0/1" → "ge-0/0/1", ":: tunnel01-" → "tunnel01-", "526" → "526"
 function stripSnmpPrefix(s) {
   if (!s) return '';
-  return s.replace(/^\d+\s*::\s*/, '').trim();
+  // Strip "digits ::" SAU simplu "::" la inceput (unele device-uri omit indexul)
+  return s.replace(/^(\d+\s*)?::\s*/, '').trim();
 }
 
 // Extrage cel mai bun nume de interfata pentru afisare pe edge.
@@ -199,13 +200,14 @@ function bestIfName(s) {
     return m ? (m[0].length > 10 ? m[0].substring(0, 10) : m[0]).toLowerCase() : null;
   }
 
-  // 5. Interfata fizica normala (ge-0/0/1, xe-0/0/0, eth0, etc.)
+  // 5. Interfata fizica normala (ge-0/0/1, xe-0/0/0, eth0, ether1, tunnel0, etc.)
   //    Verificam ca are cel putin o litera (nu e doar un numar)
   if (/[a-z]/i.test(clean)) {
-    return clean.length > 12 ? clean.substring(0, 12) : clean;
+    // Scurtam la 14 caractere pentru a nu fi prea lung pe edge
+    return clean.length > 14 ? clean.substring(0, 14) : clean;
   }
 
-  // Altceva numeric/binar — ignoram
+  // Altceva pur numeric/binar — ignoram
   return null;
 }
 
@@ -213,10 +215,12 @@ function mkEdge(raw) {
   const si = bestIfName(raw.sourceInterface);
   const ti = bestIfName(raw.targetInterface);
   return {
-    id:     String(raw.id),
-    source: String(raw.source),
-    target: String(raw.target),
-    type:   'labeled',           // custom edge cu label-uri la fiecare capat
+    id:             String(raw.id),
+    source:         String(raw.source),
+    target:         String(raw.target),
+    type:           'labeled',
+    sourcePosition: 'bottom',   // iese intotdeauna din josul device-ului sursa
+    targetPosition: 'top',      // intra intotdeauna in susul device-ului destinatie
     data:   { sourceLabel: si || null, targetLabel: ti || null },
     style:  { stroke: '#3DDC84', strokeWidth: 1.6 },
     animated: false,

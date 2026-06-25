@@ -53,7 +53,7 @@ public class DiscoveryProgressNotifier {
         ));
     }
 
-    public void notifyCompleted(int totalDevices, int totalLinks) {
+    public void notifyCompleted(int totalDevices, long totalLinks) {
         messaging.convertAndSend(TOPIC, Map.of(
                 "type", "COMPLETED",
                 "totalDevices", totalDevices,
@@ -61,7 +61,7 @@ public class DiscoveryProgressNotifier {
         ));
     }
 
-    public void notifyStopped(int totalDevices, int totalLinks) {
+    public void notifyStopped(int totalDevices, long totalLinks) {
         messaging.convertAndSend(TOPIC, Map.of(
                 "type", "STOPPED",
                 "totalDevices", totalDevices,
