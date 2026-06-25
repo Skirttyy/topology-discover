@@ -119,7 +119,7 @@ public class DeviceService {
                 return com.topo.discovery.model.Vendor.ARISTA;
             }
         } catch (Exception e) {
-            log.warn("Detectie automata vendor esuata pentru {}: {}", ip, e.getMessage());
+            log.warn("Detectie automata vendor esuata pentru  {}: {}", ip, e.getMessage());
         }
         return com.topo.discovery.model.Vendor.UNKNOWN;
     }
