@@ -18,6 +18,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -50,6 +51,9 @@ public class DiscoveryEngineService {
 
     @Value("${discovery.bfs.max-devices}")
     private int maxDevices;
+
+    @Value("${discovery.bfs.parallel-threads:5}")
+    private int parallelThreads;
 
     @Value("${discovery.snmp.community}")
     private String defaultCommunity;
@@ -112,34 +116,56 @@ public class DiscoveryEngineService {
     }
 
     private void runBfs(List<Long> seedDeviceIds) {
-        Queue<Long> queue = new LinkedList<>(seedDeviceIds);
-        Set<Long> visited = new HashSet<>();
-        Map<Long, Integer> depthMap = new HashMap<>();
-        seedDeviceIds.forEach(id -> depthMap.put(id, 0));
+        Set<Long> visited = ConcurrentHashMap.newKeySet();
+        visited.addAll(seedDeviceIds);
 
-        while (!queue.isEmpty() && devicesProcessed.get() < maxDevices && !stopRequested.get()) {
-            Long deviceId = queue.poll();
-            if (visited.contains(deviceId)) continue;
-            visited.add(deviceId);
+        List<Long> currentLevel = new ArrayList<>(seedDeviceIds);
+        int depth = 0;
 
-            int depth = depthMap.getOrDefault(deviceId, 0);
-            if (depth > maxDepth) continue;
+        ExecutorService bfsPool = Executors.newFixedThreadPool(parallelThreads);
+        try {
+            while (!currentLevel.isEmpty() && devicesProcessed.get() < maxDevices
+                    && !stopRequested.get() && depth <= maxDepth) {
 
-            Device device = deviceRepository.findById(deviceId).orElse(null);
-            if (device == null) continue;
+                log.info("BFS nivel {}: {} device-uri in paralel", depth, currentLevel.size());
 
-            log.info("BFS procesez: {} (depth={})", device.getManagementIp(), depth);
-            progressNotifier.notifyProcessing(device.getManagementIp(), "POLLING");
-
-            List<Device> neighbors = processDevice(device);
-            devicesProcessed.incrementAndGet();
-
-            for (Device neighbor : neighbors) {
-                if (!visited.contains(neighbor.getId())) {
-                    queue.add(neighbor.getId());
-                    depthMap.put(neighbor.getId(), depth + 1);
+                // trimitem toate device-urile de pe nivelul curent in paralel
+                List<Future<List<Device>>> futures = new ArrayList<>();
+                for (Long deviceId : currentLevel) {
+                    futures.add(bfsPool.submit(() -> {
+                        Device device = deviceRepository.findById(deviceId).orElse(null);
+                        if (device == null) return List.of();
+                        log.info("BFS procesez: {} (depth={})", device.getManagementIp(), depth);
+                        progressNotifier.notifyProcessing(device.getManagementIp(), "POLLING");
+                        List<Device> neighbors = processDevice(device);
+                        devicesProcessed.incrementAndGet();
+                        return neighbors;
+                    }));
                 }
+
+                // colectam vecinii pentru nivelul urmator
+                List<Long> nextLevel = new ArrayList<>();
+                for (Future<List<Device>> future : futures) {
+                    try {
+                        List<Device> neighbors = future.get(120, TimeUnit.SECONDS);
+                        for (Device n : neighbors) {
+                            if (visited.add(n.getId())
+                                    && devicesProcessed.get() + nextLevel.size() < maxDevices) {
+                                nextLevel.add(n.getId());
+                            }
+                        }
+                    } catch (TimeoutException e) {
+                        log.warn("BFS worker timeout la nivelul {}", depth);
+                    } catch (Exception e) {
+                        log.error("Eroare in BFS worker nivel {}: {}", depth, e.getMessage());
+                    }
+                }
+
+                currentLevel = nextLevel;
+                depth++;
             }
+        } finally {
+            bfsPool.shutdown();
         }
 
         log.info("BFS finalizat. Procesate: {} device-uri", devicesProcessed.get());
@@ -244,7 +270,7 @@ public class DiscoveryEngineService {
             if (entry.getName() == null || entry.getName().isBlank()) continue;
 
             NetworkInterface iface = interfaceRepository
-                    .findByDeviceAndName(device, entry.getName())
+                    .findFirstByDeviceAndName(device, entry.getName())
                     .orElse(NetworkInterface.builder().device(device).name(entry.getName()).build());
 
             iface.setMacAddress(entry.getMacAddress());
@@ -276,7 +302,7 @@ public class DiscoveryEngineService {
         String remoteName = neighbor.getRemoteSystemName().trim();
 
         // 1. cauta dupa hostname exact sau management IP
-        Optional<Device> byHostname = deviceRepository.findByHostnameIgnoreCase(remoteName);
+        Optional<Device> byHostname = deviceRepository.findFirstByHostnameIgnoreCase(remoteName);
         if (byHostname.isEmpty()) {
             byHostname = deviceRepository.findByManagementIp(remoteName);
         }
@@ -285,7 +311,7 @@ public class DiscoveryEngineService {
         // 2. cauta dupa chassis MAC in interfete
         if (neighbor.getRemoteChassisId() != null) {
             Optional<NetworkInterface> byMac =
-                    interfaceRepository.findByMacAddress(neighbor.getRemoteChassisId());
+                    interfaceRepository.findFirstByMacAddress(neighbor.getRemoteChassisId());
             if (byMac.isPresent()) return byMac.get().getDevice();
         }
 
@@ -353,7 +379,7 @@ public class DiscoveryEngineService {
 
         for (SnmpCollector.ArpEntry arp : arpEntries) {
             if (arp.getMacAddress() == null) continue;
-            interfaceRepository.findByMacAddress(arp.getMacAddress()).ifPresent(iface -> {
+            interfaceRepository.findFirstByMacAddress(arp.getMacAddress()).ifPresent(iface -> {
                 if (iface.getIpAddress() == null) {
                     iface.setIpAddress(arp.getIpAddress());
                     interfaceRepository.save(iface);

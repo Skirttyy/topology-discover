@@ -11,5 +11,5 @@ public interface DeviceRepository extends JpaRepository<Device, Long> {
 
     boolean existsByManagementIp(String managementIp);
 
-    Optional<Device> findByHostnameIgnoreCase(String hostname);
+    Optional<Device> findFirstByHostnameIgnoreCase(String hostname);
 }

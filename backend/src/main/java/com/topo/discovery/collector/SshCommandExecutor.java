@@ -30,6 +30,12 @@ public class SshCommandExecutor {
      * Executa o comanda si returneaza output-ul brut.
      */
     public String executeCommand(String host, int port, String username, String password, String command) {
+        if (username == null || username.isBlank()) {
+            throw new SshExecutionException("SSH username null/blank pentru " + host);
+        }
+        if (password == null) {
+            throw new SshExecutionException("SSH password null pentru " + host);
+        }
         Session session = null;
         ChannelExec channel = null;
         try {
@@ -93,9 +99,18 @@ public class SshCommandExecutor {
         Properties config = new Properties();
         config.put("StrictHostKeyChecking", "no");
         config.put("PreferredAuthentications", "password,keyboard-interactive");
-        // permite algoritmi mai vechi folositi de imaginile de lab (vJunos, vEOS)
-        config.put("server_host_key", "ssh-rsa,ecdsa-sha2-nistp256,ssh-ed25519");
-        config.put("kex", "diffie-hellman-group14-sha256,diffie-hellman-group14-sha1,diffie-hellman-group-exchange-sha256,ecdh-sha2-nistp256");
+        // algorimi extinsi: mwiede/jsch suporta rsa-sha2-256/512 care lipseau in 0.1.55
+        // si care cauzau JSchException("java.lang.NullPointerException") pe vJunos/vEOS
+        config.put("server_host_key",
+                "rsa-sha2-256,rsa-sha2-512,ssh-rsa,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ssh-ed25519");
+        config.put("kex",
+                "curve25519-sha256,ecdh-sha2-nistp256,ecdh-sha2-nistp384," +
+                "diffie-hellman-group14-sha256,diffie-hellman-group14-sha1," +
+                "diffie-hellman-group-exchange-sha256");
+        config.put("cipher.s2c", "aes128-ctr,aes192-ctr,aes256-ctr,aes128-cbc,3des-cbc");
+        config.put("cipher.c2s", "aes128-ctr,aes192-ctr,aes256-ctr,aes128-cbc,3des-cbc");
+        config.put("mac.s2c", "hmac-sha2-256,hmac-sha1,hmac-sha2-256-etm@openssh.com");
+        config.put("mac.c2s", "hmac-sha2-256,hmac-sha1,hmac-sha2-256-etm@openssh.com");
         session.setConfig(config);
         session.setTimeout(connectTimeoutMs);
         session.connect(connectTimeoutMs);
@@ -105,6 +120,9 @@ public class SshCommandExecutor {
     public static class SshExecutionException extends RuntimeException {
         public SshExecutionException(String message, Throwable cause) {
             super(message, cause);
+        }
+        public SshExecutionException(String message) {
+            super(message);
         }
     }
 }

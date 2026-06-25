@@ -38,6 +38,7 @@ discovery:
   bfs:
     max-depth: 10
     max-devices: 200
+    parallel-threads: 5
 
 springdoc:
   swagger-ui:

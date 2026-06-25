@@ -20,7 +20,7 @@
     <properties>
         <java.version>17</java.version>
         <jasypt.version>3.0.5</jasypt.version>
-        <jsch.version>0.1.55</jsch.version>
+        <!-- jsch.version nu mai e folosit - am migrat la com.github.mwiede:jsch -->
         <snmp4j.version>3.7.7</snmp4j.version>
         <jgrapht.version>1.5.2</jgrapht.version>
     </properties>
@@ -71,11 +71,13 @@
             <version>${jasypt.version}</version>
         </dependency>
 
-        <!-- JSch - SSH client pentru config push / show commands -->
+        <!-- JSch fork cu suport pentru algoritmi moderni (rsa-sha2-256/512, curve25519)
+             inlocuieste com.jcraft:jsch:0.1.55 care crapa cu NullPointerException
+             pe Juniper/Arista cu firmware mai nou -->
         <dependency>
-            <groupId>com.jcraft</groupId>
+            <groupId>com.github.mwiede</groupId>
             <artifactId>jsch</artifactId>
-            <version>${jsch.version}</version>
+            <version>0.2.21</version>
         </dependency>
 
         <!-- SNMP4J - SNMP walk pentru LLDP-MIB, ARP, IF-MIB -->

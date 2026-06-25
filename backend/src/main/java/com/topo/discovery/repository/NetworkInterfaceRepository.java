@@ -11,7 +11,7 @@ public interface NetworkInterfaceRepository extends JpaRepository<NetworkInterfa
 
     List<NetworkInterface> findByDevice(Device device);
 
-    Optional<NetworkInterface> findByDeviceAndName(Device device, String name);
+    Optional<NetworkInterface> findFirstByDeviceAndName(Device device, String name);
 
-    Optional<NetworkInterface> findByMacAddress(String macAddress);
+    Optional<NetworkInterface> findFirstByMacAddress(String macAddress);
 }
