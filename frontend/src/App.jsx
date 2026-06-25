@@ -215,16 +215,52 @@ function mkEdge(raw) {
   const si = bestIfName(raw.sourceInterface);
   const ti = bestIfName(raw.targetInterface);
   return {
-    id:             String(raw.id),
-    source:         String(raw.source),
-    target:         String(raw.target),
-    type:           'labeled',
-    sourcePosition: 'bottom',   // iese intotdeauna din josul device-ului sursa
-    targetPosition: 'top',      // intra intotdeauna in susul device-ului destinatie
+    id:     String(raw.id),
+    source: String(raw.source),
+    target: String(raw.target),
+    type:   'labeled',
+    // sourcePosition/targetPosition/sourceHandle/targetHandle sunt setate de
+    // applyEdgeRouting() dupa ce nodurile au pozitii calculate
     data:   { sourceLabel: si || null, targetLabel: ti || null },
     style:  { stroke: '#3DDC84', strokeWidth: 1.6 },
     animated: false,
   };
+}
+
+/**
+ * Dupa layout, calculeaza directia optima a fiecarui edge in functie de
+ * pozitiile relative ale nodurilor sursa si destinatie.
+ *
+ * - Target predominant sub sursa → bottom → top  (link vertical descendent)
+ * - Target predominant deasupra   → top → bottom  (link vertical ascendent)
+ * - Target predominant la dreapta → right → left
+ * - Target predominant la stanga  → left → right
+ */
+function applyEdgeRouting(nodes, edges) {
+  const pos = new Map(nodes.map(n => [n.id, { x: n.position.x + NW / 2, y: n.position.y + NH / 2 }]));
+  return edges.map(e => {
+    const s = pos.get(e.source);
+    const t = pos.get(e.target);
+    if (!s || !t) return e;
+
+    const dx = t.x - s.x;
+    const dy = t.y - s.y;
+
+    // Decidem daca legatura e mai mult verticala sau orizontala
+    // Pragul 0.6 face layout-ul sa prefere vertical (tipic pentru topologii ierarhice)
+    const isVertical = Math.abs(dy) >= Math.abs(dx) * 0.6;
+
+    let sp, tp, sh, th;
+    if (isVertical) {
+      if (dy >= 0) { sp = 'bottom'; sh = 's-bottom'; tp = 'top';    th = 't-top'; }
+      else         { sp = 'top';    sh = 't-top';    tp = 'bottom'; th = 's-bottom'; }
+    } else {
+      if (dx >= 0) { sp = 'right'; sh = 's-right'; tp = 'left';  th = 't-left'; }
+      else         { sp = 'left';  sh = 's-left';  tp = 'right'; th = 't-right'; }
+    }
+
+    return { ...e, sourcePosition: sp, targetPosition: tp, sourceHandle: sh, targetHandle: th };
+  });
 }
 
 // ─── App ────────────────────────────────────────────────────────────────────
@@ -276,12 +312,13 @@ export default function App() {
   const applyLayout = useCallback(() => {
     setNodes(curr => {
       const laid = dagreLayout(curr, edgesRef.current);
-      // salveaza pozitiile "acasa" pentru spring-back
       laid.forEach(n => { homePositions.current[n.id] = { ...n.position }; });
+      // Recalculam directia edge-urilor dupa ce stim pozitiile
+      setEdges(es => applyEdgeRouting(laid, es));
       return laid;
     });
     fitView();
-  }, [fitView]);
+  }, [fitView, setEdges]);
 
   // Spring-back: cand userul elibereaza un nod, il animam inapoi la pozitia dagre
   // Retinem frame ID pentru cleanup (evita memory leak daca nodul e sters in timpul animatiei)
@@ -326,11 +363,12 @@ export default function App() {
 
         const fn = (graph.nodes || []).map(n => mkNode(n));
         const fe = (graph.edges || []).map(mkEdge);
-        setEdges(fe);
-        edgesRef.current = fe;
         const laid = dagreLayout(fn, fe);
         laid.forEach(n => { homePositions.current[n.id] = { ...n.position }; });
+        const routedEdges = applyEdgeRouting(laid, fe);
+        edgesRef.current = routedEdges;
         setNodes(laid);
+        setEdges(routedEdges);
         fitView();
       })
       .catch(e => setTopoErr(e.message || 'Eroare'))

@@ -33,11 +33,11 @@ const centerLabelSt = {
 export default function LabeledEdge({
   id, sourceX, sourceY, targetX, targetY,
   sourcePosition, targetPosition,
-  style, data, animated,
+  style, data, animated, markerEnd,
 }) {
   const [edgePath, centerX, centerY] = getBezierPath({
-    sourceX, sourceY, sourcePosition,
-    targetX, targetY, targetPosition,
+    sourceX, sourceY, sourcePosition: sourcePosition || 'bottom',
+    targetX, targetY, targetPosition: targetPosition || 'top',
   });
 
   // Pozitii pentru labelurile de la capete (t=0.16 / t=0.84 de-a lungul liniei)
