@@ -62,6 +62,12 @@ public class DiscoveryEngineService {
 
     private static final int SSH_PORT = 22;
 
+    // Lock pentru faza de scriere a topologiei (rezolvare vecin + creare link).
+    // Partea lenta (SNMP/SSH) ramane in afara lock-ului; aici doar operatii DB rapide.
+    // Elimina race-ul din BFS-ul paralel care altfel ar crea device-uri/link-uri duplicate
+    // (doua thread-uri care vad acelasi vecin/aceeasi pereche in acelasi timp).
+    private final Object topologyWriteLock = new Object();
+
     // starea ultimei rulari - FARA valori null (ConcurrentHashMap nu accepta null)
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean stopRequested = new AtomicBoolean(false);
@@ -321,14 +327,19 @@ public class DiscoveryEngineService {
             log.info("LLDP: {} vecini pe {}", lldpNeighbors.size(), device.getManagementIp());
 
             for (SnmpCollector.LldpNeighbor neighbor : lldpNeighbors) {
-                Device neighborDevice = resolveOrCreateNeighbor(neighbor, device, sshPassword, snmpCommunity);
-                // guard: un device care se "vede" pe sine in LLDP nu trebuie sa creeze self-link
-                if (sameDev(neighborDevice, device)) continue;
-                createLink(device, neighbor, neighborDevice);
-                if (neighborDevice != null
-                        && neighborDevice.getStatus() == DeviceStatus.DISCOVERED
-                        && !neighborDevice.getManagementIp().startsWith("lldp:")) {
-                    newNeighbors.add(neighborDevice);
+                // Faza de scriere serializata: rezolvarea vecinului + crearea link-ului trebuie
+                // sa fie atomice fata de celelalte thread-uri BFS, altfel doua thread-uri pot
+                // crea acelasi device/link de doua ori (duplicate + link afisat dublu).
+                synchronized (topologyWriteLock) {
+                    Device neighborDevice = resolveOrCreateNeighbor(neighbor, device, sshPassword, snmpCommunity);
+                    // guard: un device care se "vede" pe sine in LLDP nu trebuie sa creeze self-link
+                    if (sameDev(neighborDevice, device)) continue;
+                    createLink(device, neighbor, neighborDevice);
+                    if (neighborDevice != null
+                            && neighborDevice.getStatus() == DeviceStatus.DISCOVERED
+                            && !neighborDevice.getManagementIp().startsWith("lldp:")) {
+                        newNeighbors.add(neighborDevice);
+                    }
                 }
             }
 
@@ -828,9 +839,12 @@ public class DiscoveryEngineService {
      * 192.168.1.1 SI pe 10.0.0.1 -> doua randuri Device pentru acelasi device).
      *
      * Identitate stabila, in ordinea increderii:
-     *   1. loopbackIp (router-id, nu depinde de subnet)
-     *   2. serialNumber
-     *   3. hostname (lowercase)
+     *   1. loopbackIp (router-id, nu depinde de subnet, unic per device)
+     *   2. hostname (lowercase, unic per device intr-o retea corecta)
+     *
+     * NU folosim serialNumber: in laboratoare virtualizate (EVE-NG) imaginile clonate
+     * vMX/vQFX raporteaza frecvent acelasi serial, ceea ce ar contopi GRESIT doua
+     * device-uri diferite (supra-merge — mai grav decat un duplicat ramas).
      *
      * Pentru fiecare grup de duplicate pastram un "master", ii mutam link-urile si
      * interfetele, alegem loopback-ul ca identitate, apoi stergem duplicatele.
@@ -880,12 +894,11 @@ public class DiscoveryEngineService {
         }
     }
 
-    /** Toate identitatile stabile ale unui device (poate fi goala daca n-avem nimic sigur). */
+    /** Identitatile stabile ale unui device (loopback + hostname). Poate fi goala. */
     private Set<String> identityKeys(Device d) {
         Set<String> keys = new LinkedHashSet<>();
-        if (d.getLoopbackIp()    != null && !d.getLoopbackIp().isBlank())    keys.add("lo:" + d.getLoopbackIp().trim());
-        if (d.getSerialNumber()  != null && !d.getSerialNumber().isBlank())  keys.add("sn:" + d.getSerialNumber().trim());
-        if (d.getHostname()      != null && !d.getHostname().isBlank())      keys.add("hn:" + d.getHostname().trim().toLowerCase());
+        if (d.getLoopbackIp() != null && !d.getLoopbackIp().isBlank()) keys.add("lo:" + d.getLoopbackIp().trim());
+        if (d.getHostname()   != null && !d.getHostname().isBlank())   keys.add("hn:" + d.getHostname().trim().toLowerCase());
         return keys;
     }
 
