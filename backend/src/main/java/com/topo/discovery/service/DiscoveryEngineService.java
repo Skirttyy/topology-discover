@@ -525,97 +525,122 @@ public class DiscoveryEngineService {
         return placeholder;
     }
 
+    /**
+     * Creeaza sau actualizeaza un link, aplicand regula de fiabilitate a interfetelor:
+     *
+     *  - Capatul unui device se completeaza AUTORITAR doar din portul local LLDP al
+     *    acelui device (cand device-ul a fost interogat). Portul local e de incredere
+     *    fiindca device-ul isi cunoaste propriile interfete.
+     *  - Capatul celuilalt device se completeaza din portul advertizat prin LLDP DOAR
+     *    daca e un nume curat de interfata SI capatul e inca gol. Cand celalalt device
+     *    e interogat la randul lui, capatul sau primeste valoarea autoritara.
+     *  - Daca nu putem determina cu incredere → ramane gol (mai bine gol decat gresit).
+     *
+     * Deduplicare pe PERECHE de device-uri (bonding/LAG = un singur link logic).
+     */
     private void createLink(Device localDevice, SnmpCollector.LldpNeighbor neighbor, Device remoteDevice) {
-        // Deduplicare pe PERECHE de device-uri (nu pe port individual).
-        // Cazul bonding/LAG: ge-0/0/1 si ge-0/0/2 duc ambele la spine01 ->
-        // tinem un singur link logic intre core01 si spine01, indiferent de cate porturi fizice.
-        if (remoteDevice != null) {
-            // Cauta link existent intre aceasta pereche de device-uri (in orice directie)
-            Optional<Link> existingLink = linkRepository.findByLocalDevice(localDevice).stream()
-                    .filter(l -> remoteDevice.equals(l.getRemoteDevice()))
-                    .findFirst();
-            if (existingLink.isEmpty()) {
-                existingLink = linkRepository.findByLocalDevice(remoteDevice).stream()
-                        .filter(l -> localDevice.equals(l.getRemoteDevice()))
-                        .findFirst();
-            }
+        String localIf  = neighbor.getLocalPortId();   // autoritar pt capatul localDevice (deja curatat sau null)
+        String remoteIf = neighbor.getRemotePortId();  // advertizat pt capatul remoteDevice (curatat sau null)
 
-            if (existingLink.isPresent()) {
-                // Link existent — updatam interfetele DOAR daca noile date contin
-                // un AE/bonding name mai bun decat ce era stocat (prioritate bonding)
-                Link lnk = existingLink.get();
-                boolean updated = false;
-                if (isBetterIfName(neighbor.getLocalPortId(), lnk.getLocalInterfaceName())) {
-                    lnk.setLocalInterfaceName(neighbor.getLocalPortId());
-                    updated = true;
-                }
-                if (isBetterIfName(neighbor.getRemotePortId(), lnk.getRemoteInterfaceName())) {
-                    lnk.setRemoteInterfaceName(neighbor.getRemotePortId());
-                    updated = true;
-                }
-                if (updated) {
-                    linkRepository.save(lnk);
-                    log.debug("Link {}<->{} updatat cu interfete mai bune: local={} remote={}",
-                            localDevice.getManagementIp(), remoteDevice.getManagementIp(),
-                            lnk.getLocalInterfaceName(), lnk.getRemoteInterfaceName());
-                }
+        // ── Vecin nerezolvat (placeholder) ──────────────────────────────────
+        if (remoteDevice == null) {
+            Optional<Link> existing = linkRepository.findByLocalDevice(localDevice).stream()
+                    .filter(l -> l.getRemoteDevice() == null
+                              && neighbor.getRemoteSystemName() != null
+                              && neighbor.getRemoteSystemName().equals(l.getRemoteSystemName()))
+                    .findFirst();
+            if (existing.isPresent()) {
+                Link l = existing.get();
+                l.setLocalInterfaceName(preferIfName(l.getLocalInterfaceName(), localIf)); // autoritar
+                if (l.getRemoteInterfaceName() == null && remoteIf != null) l.setRemoteInterfaceName(remoteIf);
+                linkRepository.save(l);
                 return;
             }
-        } else {
-            // remoteDevice null: deduplicam dupa (localDevice, remoteSystemName)
-            boolean nameExists = linkRepository.findByLocalDevice(localDevice).stream()
-                    .anyMatch(l -> neighbor.getRemoteSystemName() != null
-                            && neighbor.getRemoteSystemName().equals(l.getRemoteSystemName()));
-            if (nameExists) return;
+            linkRepository.save(Link.builder()
+                    .localDevice(localDevice).localInterfaceName(localIf)
+                    .remoteDevice(null).remoteInterfaceName(remoteIf)
+                    .remoteSystemName(neighbor.getRemoteSystemName())
+                    .remoteChassisId(neighbor.getRemoteChassisId())
+                    .source(Link.DiscoverySource.LLDP).build());
+            return;
         }
 
-        Link link = Link.builder()
-                .localDevice(localDevice)
-                .localInterfaceName(neighbor.getLocalPortId())
-                .remoteDevice(remoteDevice)
-                .remoteInterfaceName(neighbor.getRemotePortId())
+        // ── Pereche cunoscuta — cautam link existent in orice orientare ─────
+        Optional<Link> pair = findPairLink(localDevice, remoteDevice);
+        if (pair.isPresent()) {
+            Link l = pair.get();
+            // capatul localDevice = autoritar (portul lui propriu)
+            setEndInterface(l, localDevice, localIf, true);
+            // capatul remoteDevice = advertizat, doar daca inca gol
+            setEndInterface(l, remoteDevice, remoteIf, false);
+            linkRepository.save(l);
+            return;
+        }
+
+        // ── Link nou ────────────────────────────────────────────────────────
+        Link link = linkRepository.save(Link.builder()
+                .localDevice(localDevice).localInterfaceName(localIf)
+                .remoteDevice(remoteDevice).remoteInterfaceName(remoteIf)
                 .remoteSystemName(neighbor.getRemoteSystemName())
                 .remoteChassisId(neighbor.getRemoteChassisId())
-                .source(Link.DiscoverySource.LLDP)
-                .build();
-        link = linkRepository.save(link);
+                .source(Link.DiscoverySource.LLDP).build());
 
-        // notifica frontend daca avem ambele capete cunoscute
-        if (remoteDevice != null) {
-            progressNotifier.notifyLinkDiscovered(
-                    TopologyGraphResponse.GraphEdge.builder()
-                            .id("link-" + link.getId())
-                            .source(String.valueOf(localDevice.getId()))
-                            .target(String.valueOf(remoteDevice.getId()))
-                            .sourceInterface(neighbor.getLocalPortId())
-                            .targetInterface(neighbor.getRemotePortId())
-                            .discoverySource("LLDP")
-                            .build()
-            );
+        progressNotifier.notifyLinkDiscovered(
+                TopologyGraphResponse.GraphEdge.builder()
+                        .id("link-" + link.getId())
+                        .source(String.valueOf(localDevice.getId()))
+                        .target(String.valueOf(remoteDevice.getId()))
+                        .sourceInterface(localIf)
+                        .targetInterface(remoteIf)
+                        .discoverySource("LLDP")
+                        .build());
+    }
+
+    /** Compara doua device-uri dupa ID (sigur pentru entitati JPA). */
+    private boolean sameDev(Device a, Device b) {
+        return a != null && b != null && a.getId() != null && a.getId().equals(b.getId());
+    }
+
+    /** Gaseste link-ul intre perechea (a,b) in orice orientare. */
+    private Optional<Link> findPairLink(Device a, Device b) {
+        Optional<Link> x = linkRepository.findByLocalDevice(a).stream()
+                .filter(l -> sameDev(b, l.getRemoteDevice())).findFirst();
+        if (x.isPresent()) return x;
+        return linkRepository.findByLocalDevice(b).stream()
+                .filter(l -> sameDev(a, l.getRemoteDevice())).findFirst();
+    }
+
+    /**
+     * Seteaza interfata pentru capatul lui `device` din link.
+     * overwrite=true → autoritar (portul propriu al device-ului), inlocuieste mereu;
+     * overwrite=false → advertizat, completeaza doar daca e gol.
+     */
+    private void setEndInterface(Link l, Device device, String ifName, boolean overwrite) {
+        if (ifName == null) return;
+        if (sameDev(device, l.getLocalDevice())) {
+            if (overwrite) l.setLocalInterfaceName(preferIfName(l.getLocalInterfaceName(), ifName));
+            else if (l.getLocalInterfaceName() == null) l.setLocalInterfaceName(ifName);
+        } else if (sameDev(device, l.getRemoteDevice())) {
+            if (overwrite) l.setRemoteInterfaceName(preferIfName(l.getRemoteInterfaceName(), ifName));
+            else if (l.getRemoteInterfaceName() == null) l.setRemoteInterfaceName(ifName);
         }
     }
 
     /**
-     * Returneaza true daca 'candidate' e un nume de interfata mai bun decat 'current'.
-     * Prioritate: AE/bond explicit > LACP/LAG description > interfata fizica > null.
-     *
-     * Ex: "ae0" > "LACP-1/2-AE0" > "ge-0/0/1" > null
+     * Alege numele preferat pentru un capat autoritar (cazul bonding cu mai multe
+     * porturi fizice): preferam un nume de agregat (ae/bond/po) daca exista, altfel
+     * pastram alegerea deterministă (cel mai mic lexicografic) ca sa nu "pâlpâie".
      */
-    private boolean isBetterIfName(String candidate, String current) {
-        if (candidate == null || candidate.isBlank()) return false;
-        if (current == null || current.isBlank()) return true;
-        return bondingScore(candidate) > bondingScore(current);
+    private String preferIfName(String current, String candidate) {
+        if (candidate == null) return current;
+        if (current == null)   return candidate;
+        int cc = aggScore(current), sc = aggScore(candidate);
+        if (sc != cc) return sc > cc ? candidate : current;
+        return candidate.compareToIgnoreCase(current) < 0 ? candidate : current;
     }
 
-    private int bondingScore(String name) {
-        if (name == null) return 0;
-        String lower = name.toLowerCase();
-        // AE/bond direct → scor maxim
-        if (lower.matches("ae\\d+.*") || lower.matches("bond\\d+.*") || lower.matches("po\\d+.*")) return 3;
-        // Contine LACP/LAG → bun, dar nu ideal
-        if (lower.contains("lacp") || lower.contains("lag")) return 2;
-        // Interfata fizica simpla
-        return 1;
+    private int aggScore(String n) {
+        return n != null && n.toLowerCase().matches("(ae|bond|po|port-channel).*") ? 1 : 0;
     }
 
     private void enrichWithArp(Device device, String snmpCommunity) {
@@ -664,23 +689,22 @@ public class DiscoveryEngineService {
                 log.info("Rezolvare placeholder {} -> {} ({})",
                         placeholder.getManagementIp(), real.getHostname(), real.getManagementIp());
 
-                // Muta link-urile de la placeholder la device-ul real
+                // Muta link-urile de la placeholder la device-ul real (null-safe)
                 linkRepository.findByLocalDevice(placeholder).forEach(link -> {
-                    // evita link self-loop dupa mutare
-                    if (!link.getRemoteDevice().equals(real)) {
+                    if (sameDev(link.getRemoteDevice(), real)) {
+                        linkRepository.delete(link); // ar deveni self-loop
+                    } else {
                         link.setLocalDevice(real);
                         linkRepository.save(link);
-                    } else {
-                        linkRepository.delete(link);
                     }
                 });
 
                 linkRepository.findByRemoteDevice(placeholder).forEach(link -> {
-                    if (!link.getLocalDevice().equals(real)) {
+                    if (sameDev(link.getLocalDevice(), real)) {
+                        linkRepository.delete(link); // ar deveni self-loop
+                    } else {
                         link.setRemoteDevice(real);
                         linkRepository.save(link);
-                    } else {
-                        linkRepository.delete(link);
                     }
                 });
 
@@ -692,5 +716,49 @@ public class DiscoveryEngineService {
                 progressNotifier.notifyNodeUpdated(GraphBuilderService.toNode(real));
             });
         }
+
+        // Dupa mutarea link-urilor pot aparea duplicate pe aceeasi pereche — le colapsam
+        dedupeAllLinks();
+    }
+
+    /**
+     * Colapseaza link-urile duplicate pe aceeasi pereche de device-uri (in orice orientare),
+     * fuzionand numele de interfata pe fiecare capat. Sterge si self-loop-urile.
+     */
+    private void dedupeAllLinks() {
+        List<Link> all = linkRepository.findAll();
+        Map<String, Link> keep = new HashMap<>();
+        List<Link> toDelete = new ArrayList<>();
+
+        for (Link l : all) {
+            if (l.getLocalDevice() == null || l.getRemoteDevice() == null) continue;
+            Long a = l.getLocalDevice().getId();
+            Long b = l.getRemoteDevice().getId();
+            if (a == null || b == null) continue;
+            if (a.equals(b)) { toDelete.add(l); continue; } // self-loop
+
+            String key = Math.min(a, b) + "-" + Math.max(a, b);
+            Link master = keep.get(key);
+            if (master == null) {
+                keep.put(key, l);
+            } else {
+                // fuzionam interfetele lui l in master (completam capetele goale)
+                fillEnd(master, l.getLocalDevice(),  l.getLocalInterfaceName());
+                fillEnd(master, l.getRemoteDevice(), l.getRemoteInterfaceName());
+                linkRepository.save(master);
+                toDelete.add(l);
+            }
+        }
+        if (!toDelete.isEmpty()) {
+            linkRepository.deleteAll(toDelete);
+            log.info("Dedup link-uri: colapsate {} duplicate", toDelete.size());
+        }
+    }
+
+    /** Completeaza capatul lui `dev` din `link` cu `ifName` doar daca e gol. */
+    private void fillEnd(Link link, Device dev, String ifName) {
+        if (dev == null || ifName == null) return;
+        if (sameDev(dev, link.getLocalDevice())  && link.getLocalInterfaceName()  == null) link.setLocalInterfaceName(ifName);
+        else if (sameDev(dev, link.getRemoteDevice()) && link.getRemoteInterfaceName() == null) link.setRemoteInterfaceName(ifName);
     }
 }

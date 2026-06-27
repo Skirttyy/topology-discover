@@ -63,13 +63,18 @@ public class SnmpCollector {
     private static final String OID_SYS_NAME  = "1.3.6.1.2.1.1.5.0";
 
     // --- LLDP-MIB ---
-    private static final String OID_LLDP_REM_SYS_NAME   = "1.0.8802.1.1.2.1.4.1.1.9";
-    private static final String OID_LLDP_REM_PORT_ID    = "1.0.8802.1.1.2.1.4.1.1.7";
-    private static final String OID_LLDP_REM_PORT_DESCR = "1.0.8802.1.1.2.1.4.1.1.8";
-    private static final String OID_LLDP_REM_CHASSIS_ID = "1.0.8802.1.1.2.1.4.1.1.5";
-    private static final String OID_LLDP_LOC_PORT_ID    = "1.0.8802.1.1.2.1.3.7.1.3";
+    // Tabela REMOTE (vecinii vazuti de device): 1.0.8802.1.1.2.1.4.1.1.<col>
+    private static final String OID_LLDP_REM_CHASSIS_ID    = "1.0.8802.1.1.2.1.4.1.1.5";
+    private static final String OID_LLDP_REM_PORT_SUBTYPE  = "1.0.8802.1.1.2.1.4.1.1.6"; // lldpRemPortIdSubtype
+    private static final String OID_LLDP_REM_PORT_ID       = "1.0.8802.1.1.2.1.4.1.1.7";
+    private static final String OID_LLDP_REM_PORT_DESCR    = "1.0.8802.1.1.2.1.4.1.1.8";
+    private static final String OID_LLDP_REM_SYS_NAME      = "1.0.8802.1.1.2.1.4.1.1.9";
+    // Tabela LOCALA (porturile proprii ale device-ului): 1.0.8802.1.1.2.1.3.7.1.<col>
+    private static final String OID_LLDP_LOC_PORT_SUBTYPE  = "1.0.8802.1.1.2.1.3.7.1.2"; // lldpLocPortIdSubtype
+    private static final String OID_LLDP_LOC_PORT_ID       = "1.0.8802.1.1.2.1.3.7.1.3";
+    private static final String OID_LLDP_LOC_PORT_DESCR    = "1.0.8802.1.1.2.1.3.7.1.4"; // lldpLocPortDesc
     // lldpRemManAddrTable - contine IP-ul de management al vecinului
-    private static final String OID_LLDP_REM_MAN_ADDR   = "1.0.8802.1.1.2.1.4.2.1.3";
+    private static final String OID_LLDP_REM_MAN_ADDR      = "1.0.8802.1.1.2.1.4.2.1.3";
 
     // --- ARP ---
     private static final String OID_ARP_PHYS = "1.3.6.1.2.1.4.22.1.2";
@@ -116,59 +121,55 @@ public class SnmpCollector {
     public List<LldpNeighbor> walkLldpNeighbors(String host, String community) {
         List<LldpNeighbor> neighbors = new ArrayList<>();
         try {
-            // Walk-urile LLDP sunt independente — le rulam in paralel
             int timeoutSec = (timeoutMs * 2) / 1000 + 5;
-            CompletableFuture<List<SnmpEntry>> sysNameF   = walkAsync(host, community, OID_LLDP_REM_SYS_NAME);
-            CompletableFuture<List<SnmpEntry>> portIdF    = walkAsync(host, community, OID_LLDP_REM_PORT_ID);
-            CompletableFuture<List<SnmpEntry>> portDescrF = walkAsync(host, community, OID_LLDP_REM_PORT_DESCR);
-            CompletableFuture<List<SnmpEntry>> chassisF   = walkAsync(host, community, OID_LLDP_REM_CHASSIS_ID);
-            CompletableFuture<List<SnmpEntry>> locPortF   = walkAsync(host, community, OID_LLDP_LOC_PORT_ID);
 
-            // safeGet gestioneaza InterruptedException, TimeoutException, ExecutionException
-            List<SnmpEntry> sysNames   = safeGet(sysNameF,   timeoutSec);
-            List<SnmpEntry> portIds    = safeGet(portIdF,     timeoutSec);
-            List<SnmpEntry> portDescrs = safeGet(portDescrF,  timeoutSec);
-            List<SnmpEntry> chassisIds = safeGet(chassisF,    timeoutSec);
-            List<SnmpEntry> locPorts   = safeGet(locPortF,    timeoutSec);
+            // Tabela REMOTE (vecini) + subtype-uri si descrieri
+            CompletableFuture<List<SnmpEntry>> sysNameF      = walkAsync(host, community, OID_LLDP_REM_SYS_NAME);
+            CompletableFuture<List<SnmpEntry>> remPortIdF    = walkAsync(host, community, OID_LLDP_REM_PORT_ID);
+            CompletableFuture<List<SnmpEntry>> remPortSubF   = walkAsync(host, community, OID_LLDP_REM_PORT_SUBTYPE);
+            CompletableFuture<List<SnmpEntry>> remPortDescrF = walkAsync(host, community, OID_LLDP_REM_PORT_DESCR);
+            CompletableFuture<List<SnmpEntry>> chassisF      = walkAsync(host, community, OID_LLDP_REM_CHASSIS_ID);
+            // Tabela LOCALA (porturile proprii) + subtype + descriere
+            CompletableFuture<List<SnmpEntry>> locPortIdF    = walkAsync(host, community, OID_LLDP_LOC_PORT_ID);
+            CompletableFuture<List<SnmpEntry>> locPortSubF   = walkAsync(host, community, OID_LLDP_LOC_PORT_SUBTYPE);
+            CompletableFuture<List<SnmpEntry>> locPortDescrF = walkAsync(host, community, OID_LLDP_LOC_PORT_DESCR);
 
-            // indexul LLDP e: <timeMark>.<localPortNum>.<remoteIndex>
-            // ne intereseaza localPortNum ca sa stim prin ce port local vedem vecinul
+            List<SnmpEntry> sysNames      = safeGet(sysNameF,      timeoutSec);
+            List<SnmpEntry> remPortIds    = safeGet(remPortIdF,    timeoutSec);
+            List<SnmpEntry> remPortSubs   = safeGet(remPortSubF,   timeoutSec);
+            List<SnmpEntry> remPortDescrs = safeGet(remPortDescrF, timeoutSec);
+            List<SnmpEntry> chassisIds    = safeGet(chassisF,      timeoutSec);
+            List<SnmpEntry> locPortIds    = safeGet(locPortIdF,    timeoutSec);
+            List<SnmpEntry> locPortSubs   = safeGet(locPortSubF,   timeoutSec);
+            List<SnmpEntry> locPortDescrs = safeGet(locPortDescrF, timeoutSec);
+
+            // indexul tabelei REM: <timeMark>.<localPortNum>.<remoteIndex>
             for (SnmpEntry sysNameEntry : sysNames) {
                 String suffix = stripPrefix(sysNameEntry.oid(), OID_LLDP_REM_SYS_NAME);
-                // suffix format: <timeMark>.<localPortNum>.<remoteIndex>
                 String[] parts = suffix.split("\\.");
                 String localPortNum = parts.length >= 2 ? parts[1] : null;
 
-                String remotePortId    = findByOidSuffix(portIds, OID_LLDP_REM_PORT_ID, suffix);
-                String remotePortDescr = findByOidSuffix(portDescrs, OID_LLDP_REM_PORT_DESCR, suffix);
-                String chassisId       = findByOidSuffix(chassisIds, OID_LLDP_REM_CHASSIS_ID, suffix);
+                // --- portul REMOTE (advertizat de vecin) ---
+                String remPortId   = findByOidSuffix(remPortIds,    OID_LLDP_REM_PORT_ID,      suffix);
+                String remPortSub  = findByOidSuffix(remPortSubs,   OID_LLDP_REM_PORT_SUBTYPE, suffix);
+                String remPortDesc = findByOidSuffix(remPortDescrs, OID_LLDP_REM_PORT_DESCR,   suffix);
+                String chassisId   = findByOidSuffix(chassisIds,    OID_LLDP_REM_CHASSIS_ID,   suffix);
+                String remotePort  = pickPortName(remPortId, remPortSub, remPortDesc);
 
-                // gasim portul local dupa localPortNum
-                String localPortId = null;
-                if (localPortNum != null) {
-                    for (SnmpEntry lp : locPorts) {
-                        if (lp.oid().endsWith("." + localPortNum)) {
-                            localPortId = lp.value();
-                            break;
-                        }
-                    }
-                }
+                // --- portul LOCAL (al device-ului nostru, autoritar) ---
+                // indexat dupa localPortNum in tabela LOC
+                String locPortId   = localPortNum != null ? findByIndex(locPortIds,    OID_LLDP_LOC_PORT_ID,      localPortNum) : null;
+                String locPortSub  = localPortNum != null ? findByIndex(locPortSubs,   OID_LLDP_LOC_PORT_SUBTYPE, localPortNum) : null;
+                String locPortDesc = localPortNum != null ? findByIndex(locPortDescrs, OID_LLDP_LOC_PORT_DESCR,   localPortNum) : null;
+                String localPort   = pickPortName(locPortId, locPortSub, locPortDesc);
 
                 String remoteName = sysNameEntry.value();
-                // prefer portDescr ca e mai lizibil (ex: "ge-0/0/1" in loc de MAC sau index numeric)
-                String remotePort = (remotePortDescr != null && !remotePortDescr.isBlank())
-                        ? remotePortDescr : remotePortId;
-
-                // filtram valorile pur numerice (ifIndex brut) — nu sunt utile ca nume de interfata
-                remotePort  = isUsefulPortName(remotePort)  ? remotePort  : null;
-                localPortId = isUsefulPortName(localPortId) ? localPortId : null;
-
                 if (remoteName != null && !remoteName.isBlank()) {
                     neighbors.add(LldpNeighbor.builder()
                             .remoteSystemName(remoteName.trim())
-                            .remotePortId(remotePort)
+                            .remotePortId(remotePort)            // clean sau null
                             .remoteChassisId(formatMac(chassisId))
-                            .localPortId(localPortId)
+                            .localPortId(localPort)              // clean sau null (autoritar)
                             .build());
                 }
             }
@@ -300,10 +301,72 @@ public class SnmpCollector {
      * Filtreaza indexuri SNMP numerice pure ("526", "148") care nu sunt nume de interfata.
      * LLDP port ID subtype "locally assigned" poate returna indexul ca string.
      */
-    private boolean isUsefulPortName(String name) {
-        if (name == null || name.isBlank()) return false;
-        // Pur numeric = ifIndex SNMP, nu e un nume de interfata
-        return !name.trim().matches("\\d+");
+    /**
+     * Alege cel mai bun nume de interfata dintr-un set LLDP (portId + subtype + portDesc).
+     * Returneaza un nume curat de interfata SAU null daca nu se poate determina cu incredere
+     * (mai bine gol decat gresit).
+     *
+     * Subtype-uri LLDP port: 1=ifAlias, 2=portComponent, 3=MAC, 4=netAddr, 5=ifName, 7=local
+     */
+    private String pickPortName(String idVal, String idSubtype, String descVal) {
+        int st = parseIntSafe(idSubtype, -1);
+        // Ignoram portId daca e MAC (3) sau adresa de retea (4) — nu sunt nume de interfata
+        String id   = (st == 3 || st == 4) ? null : cleanIfName(idVal);
+        String desc = cleanIfName(descVal);
+
+        // 1. Agregat detectabil (bonding/LAG) — cel mai util pentru link-uri bondate.
+        //    "LACP-1/2-AE0" -> "ae0", "Port-Channel1" -> "po1", "ae0" -> "ae0"
+        String agg = extractAggregate(idVal);
+        if (agg == null) agg = extractAggregate(descVal);
+        if (agg != null) return agg;
+
+        // 2. portId cu subtype "interfaceName" (5) e canonic
+        if (st == 5 && id != null) return id;
+        // 3. orice candidat care arata ca o interfata reala (preferam portId)
+        if (looksLikeIface(id))   return id;
+        if (looksLikeIface(desc)) return desc;
+        // 4. nimic sigur → gol (nu ghicim)
+        return null;
+    }
+
+    private static final java.util.regex.Pattern AGG_PATTERN =
+            java.util.regex.Pattern.compile("(?i)\\b(ae|bond|po|port-channel)[\\-\\s]?(\\d+)\\b");
+
+    /** Extrage numele de agregat (ae0/bond0/po1) dintr-un string, sau null. */
+    private String extractAggregate(String s) {
+        if (s == null) return null;
+        java.util.regex.Matcher m = AGG_PATTERN.matcher(s);
+        if (m.find()) {
+            String prefix = m.group(1).toLowerCase();
+            if (prefix.equals("port-channel")) prefix = "po";
+            return prefix + m.group(2);
+        }
+        return null;
+    }
+
+    /** Curata o valoare; returneaza null daca e MAC, index numeric pur, sau fara litere. */
+    private String cleanIfName(String raw) {
+        if (raw == null) return null;
+        String s = raw.trim();
+        if (s.isEmpty()) return null;
+        if (s.matches("(?i)([0-9a-f]{2}[:\\-. ]){5}[0-9a-f]{2}")) return null; // MAC
+        if (s.matches("\\d+")) return null;                                     // ifIndex pur
+        if (!s.matches(".*[a-zA-Z].*")) return null;                            // fara litere = junk
+        return s.replaceAll("\\s+", " ").trim();
+    }
+
+    /** True daca string-ul arata ca un nume de interfata real (Juniper/Arista/Cisco/MikroTik). */
+    private boolean looksLikeIface(String s) {
+        if (s == null) return false;
+        String l = s.toLowerCase();
+        return l.matches("(ae|bond|po|port-channel|reth|ge|xe|et|fe|gi|te|fa|hu|fo|eth|ether|sfp|sfp-sfpplus|sfpplus|qsfp|combo|wlan|tun|tunnel|irb|vlan|mgmt|fxp|em|me|gr|ip|vme|bridge)[\\-\\s./]*\\d.*")
+            || l.matches("(ethernet|gigabitethernet|tengige|tengigabitethernet|fastethernet|hundredgige|fortygige|twentyfivegige)[\\s]*\\d.*")
+            || l.matches("(bridge|ether)\\d*");
+    }
+
+    private int parseIntSafe(String s, int def) {
+        if (s == null) return def;
+        try { return Integer.parseInt(s.trim()); } catch (NumberFormatException e) { return def; }
     }
 
     // ---- Async helpers ----

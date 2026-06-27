@@ -187,58 +187,13 @@ function mkNode(raw, position) {
   };
 }
 
-// Strip prefix SNMP: "529 :: ge-0/0/1" → "ge-0/0/1", ":: tunnel01-" → "tunnel01-", "526" → "526"
-function stripSnmpPrefix(s) {
-  if (!s) return '';
-  // Strip "digits ::" SAU simplu "::" la inceput (unele device-uri omit indexul)
-  return s.replace(/^(\d+\s*)?::\s*/, '').trim();
-}
-
-// Extrage cel mai bun nume de interfata pentru afisare pe edge.
-// Returneaza null daca valoarea nu e un nume util (ex: index numeric pur).
-//
-// Prioritate:
-//   "LACP-1/2-AE0"  → "ae0"
-//   "ae0"           → "ae0"
-//   "ge-0/0/1"      → "ge-0/0/1"
-//   "526"           → null  (ifIndex brut SNMP — nu e un nume)
-//   null/""         → null
+// Backend-ul trimite deja nume de interfata curate (sau null cand nu e sigur).
+// Frontend-ul doar afiseaza: trim + scurtare pentru a incapea pe edge.
 function bestIfName(s) {
   if (!s) return null;
-  const clean = stripSnmpPrefix(s);
-  if (!clean) return null;
-
-  // Daca e pur numeric → e un ifIndex SNMP brut, nu un nume de interfata
-  // LLDP subtype "locally assigned" returneaza deseori indexul ca string
-  if (/^\d+$/.test(clean)) return null;
-
-  // 1. AE number din LACP descriere: "LACP-1/2-AE0" → "ae0"
-  const aeInLacp = clean.match(/\bAE(\d+)\b/i);
-  if (aeInLacp) return `ae${aeInLacp[1]}`;
-
-  // 2. AE/bond direct: "ae0", "ae-0/0/0", "bond3", "Po1", "port-channel2"
-  const direct = clean.match(/^(ae[\d\/\-]+|bond\d+|port-channel\d+|po\d+)\b/i);
-  if (direct) return direct[1].toLowerCase();
-
-  // 3. "ae0" undeva in string: "lag-ae0-member" → "ae0"
-  const aeMid = clean.match(/\b(ae\d+)\b/i);
-  if (aeMid) return aeMid[1].toLowerCase();
-
-  // 4. LACP/LAG fara nr AE — afisam primele caractere utile (nu indexul)
-  if (/\b(lacp|lag)\b/i.test(clean)) {
-    const m = clean.match(/[a-z][\w\/\-]*/i);
-    return m ? (m[0].length > 10 ? m[0].substring(0, 10) : m[0]).toLowerCase() : null;
-  }
-
-  // 5. Interfata fizica normala (ge-0/0/1, xe-0/0/0, eth0, ether1, tunnel0, etc.)
-  //    Verificam ca are cel putin o litera (nu e doar un numar)
-  if (/[a-z]/i.test(clean)) {
-    // Scurtam la 14 caractere pentru a nu fi prea lung pe edge
-    return clean.length > 14 ? clean.substring(0, 14) : clean;
-  }
-
-  // Altceva pur numeric/binar — ignoram
-  return null;
+  const t = String(s).trim();
+  if (!t) return null;
+  return t.length > 16 ? t.slice(0, 16) + '…' : t;
 }
 
 function mkEdge(raw) {
