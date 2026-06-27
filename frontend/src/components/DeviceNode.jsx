@@ -80,7 +80,23 @@ const IconUnknown = ({ color }) => (
 );
 
 // ── Handle style ───────────────────────────────────────────────────────────
-const H = { background: '#353C4A', width: 7, height: 7, border: '2px solid #1A1F2B' };
+// Pentru floating edges handle-urile nu mai conteaza vizual (edge-ul isi calculeaza
+// singur punctele pe perimetru). Tinem un singur source + target, ascunse, centrate.
+const HID = {
+  opacity: 0, width: 1, height: 1, minWidth: 1, minHeight: 1,
+  border: 'none', background: 'transparent', pointerEvents: 'none',
+  left: '50%', top: '50%', transform: 'translate(-50%,-50%)',
+};
+
+// Handle-uri ascunse comune tuturor tipurilor de nod
+function FloatingHandles() {
+  return (
+    <>
+      <Handle type="source" position={Position.Top} style={HID} isConnectable={false} />
+      <Handle type="target" position={Position.Top} style={HID} isConnectable={false} />
+    </>
+  );
+}
 
 const ERROR_COLOR   = '#F2545B';
 const WARNING_COLOR = '#F2A93B';
@@ -104,14 +120,7 @@ function DeviceNode({ data, selected }) {
         animation: 'nodeAppear 0.3s ease both',
         fontFamily: 'var(--font-ui)',
       }}>
-        <Handle id="t-top"    type="target" position={Position.Top}    style={H} />
-        <Handle id="s-top"    type="source" position={Position.Top}    style={H} />
-        <Handle id="t-bottom" type="target" position={Position.Bottom} style={H} />
-        <Handle id="s-bottom" type="source" position={Position.Bottom} style={H} />
-        <Handle id="t-left"   type="target" position={Position.Left}   style={H} />
-        <Handle id="s-left"   type="source" position={Position.Left}   style={H} />
-        <Handle id="t-right"  type="target" position={Position.Right}  style={H} />
-        <Handle id="s-right"  type="source" position={Position.Right}  style={H} />
+        <FloatingHandles />
         <div style={{ padding: '8px 12px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
             <IconUnknown color="#5A6275"/>
@@ -147,14 +156,7 @@ function DeviceNode({ data, selected }) {
         cursor: 'pointer', fontFamily: 'var(--font-ui)',
         animation: 'nodeAppear 0.35s cubic-bezier(0.34,1.56,0.64,1) both',
       }}>
-        <Handle id="t-top"    type="target" position={Position.Top}    style={H} />
-        <Handle id="s-top"    type="source" position={Position.Top}    style={H} />
-        <Handle id="t-bottom" type="target" position={Position.Bottom} style={H} />
-        <Handle id="s-bottom" type="source" position={Position.Bottom} style={H} />
-        <Handle id="t-left"   type="target" position={Position.Left}   style={H} />
-        <Handle id="s-left"   type="source" position={Position.Left}   style={H} />
-        <Handle id="t-right"  type="target" position={Position.Right}  style={H} />
-        <Handle id="s-right"  type="source" position={Position.Right}  style={H} />
+        <FloatingHandles />
         <div style={{ padding: '10px 14px 11px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 6 }}>
             <IconWan color="#F2A93B"/>
@@ -198,14 +200,7 @@ function DeviceNode({ data, selected }) {
         transition: 'box-shadow 0.2s, border-color 0.2s',
         animation: 'nodeAppear 0.35s cubic-bezier(0.34,1.56,0.64,1) both',
       }}>
-        <Handle id="t-top"    type="target" position={Position.Top}    style={H} />
-        <Handle id="s-top"    type="source" position={Position.Top}    style={H} />
-        <Handle id="t-bottom" type="target" position={Position.Bottom} style={H} />
-        <Handle id="s-bottom" type="source" position={Position.Bottom} style={H} />
-        <Handle id="t-left"   type="target" position={Position.Left}   style={H} />
-        <Handle id="s-left"   type="source" position={Position.Left}   style={H} />
-        <Handle id="t-right"  type="target" position={Position.Right}  style={H} />
-        <Handle id="s-right"  type="source" position={Position.Right}  style={H} />
+        <FloatingHandles />
         <div style={{ padding: '10px 14px 12px', paddingLeft: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 7 }}>
             <IconRouter color={vcolor}/>
@@ -255,10 +250,7 @@ function DeviceNode({ data, selected }) {
       transition: 'box-shadow 0.2s, border-color 0.2s',
       animation: 'nodeAppear 0.4s cubic-bezier(0.34,1.56,0.64,1) both',
     }}>
-      <Handle type="target" position={Position.Top}    style={H} />
-      <Handle type="source" position={Position.Bottom} style={H} />
-      <Handle type="target" position={Position.Left}   style={H} />
-      <Handle type="source" position={Position.Right}  style={H} />
+      <FloatingHandles />
       <div style={{ padding: '10px 14px 12px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 7 }}>
           <IconSwitch color={vcolor}/>

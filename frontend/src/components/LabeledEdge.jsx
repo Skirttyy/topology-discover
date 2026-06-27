@@ -1,5 +1,6 @@
-import React from 'react';
-import { getBezierPath, EdgeLabelRenderer, BaseEdge } from 'reactflow';
+import React, { useCallback } from 'react';
+import { useStore, getBezierPath, EdgeLabelRenderer, BaseEdge } from 'reactflow';
+import { getEdgeParams } from './floating';
 
 const endLabelSt = {
   position: 'absolute',
@@ -7,7 +8,7 @@ const endLabelSt = {
   fontSize: 9,
   fontWeight: 500,
   color: '#6B7485',
-  background: 'rgba(11,14,20,0.82)',
+  background: 'rgba(11,14,20,0.85)',
   padding: '1px 4px',
   borderRadius: 3,
   pointerEvents: 'none',
@@ -20,48 +21,51 @@ const centerLabelSt = {
   fontFamily: 'JetBrains Mono, monospace',
   fontSize: 10,
   fontWeight: 700,
-  color: '#8B93A3',
+  color: '#9BA3B4',
   background: 'rgba(11,14,20,0.92)',
   padding: '2px 7px',
   borderRadius: 4,
   pointerEvents: 'none',
   whiteSpace: 'nowrap',
-  border: '1px solid #252A35',
+  border: '1px solid #2A3140',
   letterSpacing: 0.3,
 };
 
-export default function LabeledEdge({
-  id, sourceX, sourceY, targetX, targetY,
-  sourcePosition, targetPosition,
-  style, data, animated, markerEnd,
-}) {
-  const [edgePath, centerX, centerY] = getBezierPath({
-    sourceX, sourceY, sourcePosition: sourcePosition || 'bottom',
-    targetX, targetY, targetPosition: targetPosition || 'top',
+/**
+ * Floating edge: citeste pozitiile reale ale nodurilor din store si calculeaza
+ * dinamic punctele de conexiune pe perimetrul fiecarui nod. Se actualizeaza
+ * automat cand nodurile se misca. Functioneaza pe orice topologie/layout.
+ */
+export default function LabeledEdge({ id, source, target, style, data, animated, markerEnd }) {
+  const sourceNode = useStore(useCallback((s) => s.nodeInternals.get(source), [source]));
+  const targetNode = useStore(useCallback((s) => s.nodeInternals.get(target), [target]));
+
+  if (!sourceNode || !targetNode) return null;
+
+  const { sx, sy, tx, ty, sourcePos, targetPos } = getEdgeParams(sourceNode, targetNode);
+
+  const [edgePath, labelX, labelY] = getBezierPath({
+    sourceX: sx, sourceY: sy, sourcePosition: sourcePos,
+    targetX: tx, targetY: ty, targetPosition: targetPos,
   });
 
-  // Pozitii pentru labelurile de la capete (t=0.16 / t=0.84 de-a lungul liniei)
-  const dx = targetX - sourceX;
-  const dy = targetY - sourceY;
-  const srcLX = sourceX + dx * 0.16;
-  const srcLY = sourceY + dy * 0.16;
-  const tgtLX = sourceX + dx * 0.84;
-  const tgtLY = sourceY + dy * 0.84;
+  // Pozitiile label-urilor de la capete, de-a lungul liniei drepte sursa→tinta
+  const dx = tx - sx, dy = ty - sy;
+  const srcLX = sx + dx * 0.24, srcLY = sy + dy * 0.24;
+  const tgtLX = sx + dx * 0.76, tgtLY = sy + dy * 0.76;
 
   const si = data?.sourceLabel;
   const ti = data?.targetLabel;
-
-  // Label central: "ae0 ↔ ae1" sau "ae0" sau "ae1" — ce avem
   let centerLabel = null;
   if (si && ti) centerLabel = `${si} ↔ ${ti}`;
-  else if (si)  centerLabel = si;
-  else if (ti)  centerLabel = ti;
+  else          centerLabel = si || ti || null;
 
   return (
     <>
       <BaseEdge
         id={id}
         path={edgePath}
+        markerEnd={markerEnd}
         style={{
           ...style,
           strokeDasharray: animated ? '6 3' : undefined,
@@ -69,41 +73,18 @@ export default function LabeledEdge({
         }}
       />
       <EdgeLabelRenderer>
-        {/* Label central — interfata locala <-> interfata remote */}
         {centerLabel && (
-          <div
-            className="nodrag nopan"
-            style={{
-              ...centerLabelSt,
-              transform: `translate(-50%,-50%) translate(${centerX}px,${centerY}px)`,
-            }}
-          >
+          <div className="nodrag nopan" style={{ ...centerLabelSt, transform: `translate(-50%,-50%) translate(${labelX}px,${labelY}px)` }}>
             {centerLabel}
           </div>
         )}
-
-        {/* Label sursa — aproape de device-ul sursa */}
         {si && (
-          <div
-            className="nodrag nopan"
-            style={{
-              ...endLabelSt,
-              transform: `translate(-50%,-50%) translate(${srcLX}px,${srcLY}px)`,
-            }}
-          >
+          <div className="nodrag nopan" style={{ ...endLabelSt, transform: `translate(-50%,-50%) translate(${srcLX}px,${srcLY}px)` }}>
             {si}
           </div>
         )}
-
-        {/* Label destinatie — aproape de device-ul destinatie */}
         {ti && (
-          <div
-            className="nodrag nopan"
-            style={{
-              ...endLabelSt,
-              transform: `translate(-50%,-50%) translate(${tgtLX}px,${tgtLY}px)`,
-            }}
-          >
+          <div className="nodrag nopan" style={{ ...endLabelSt, transform: `translate(-50%,-50%) translate(${tgtLX}px,${tgtLY}px)` }}>
             {ti}
           </div>
         )}

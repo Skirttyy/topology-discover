@@ -106,27 +106,57 @@ function hierarchicalLayout(nodes, edges) {
     }
   });
 
-  // ── Grupare pe nivel si pozitionare ─────────────────────────────────────
+  // ── Grupare pe nivel ────────────────────────────────────────────────────
   const byRank = new Map();
   nodes.forEach(n => {
     const r = rankMap.get(n.id) ?? 4;
     if (!byRank.has(r)) byRank.set(r, []);
     byRank.get(r).push(n);
   });
-
   const sortedRanks = [...byRank.keys()].sort((a, b) => a - b);
+  const levels = sortedRanks.map(r => byRank.get(r));
 
-  // Latimea maxima a unui nivel (pentru centrare)
+  // ── Reducere incrucisari: ordonare barycenter ───────────────────────────
+  // Construim lista de vecini pentru fiecare nod
+  const adj = new Map(nodes.map(n => [n.id, []]));
+  edges.forEach(e => {
+    if (adj.has(e.source) && adj.has(e.target)) {
+      adj.get(e.source).push(e.target);
+      adj.get(e.target).push(e.source);
+    }
+  });
+
+  // index-ul curent al fiecarui nod in nivelul sau (pentru calcul barycenter)
+  const idxOf = new Map();
+  levels.forEach(lvl => lvl.forEach((n, i) => idxOf.set(n.id, i)));
+
+  // Sorteaza un nivel dupa pozitia medie a vecinilor din nivelul de referinta
+  const orderByBarycenter = (lvl) => {
+    const score = new Map();
+    lvl.forEach(n => {
+      const neigh = adj.get(n.id) || [];
+      const positions = neigh.map(id => idxOf.get(id)).filter(v => v !== undefined);
+      score.set(n.id, positions.length ? positions.reduce((a, b) => a + b, 0) / positions.length : idxOf.get(n.id));
+    });
+    lvl.sort((a, b) => score.get(a.id) - score.get(b.id));
+    lvl.forEach((n, i) => idxOf.set(n.id, i));
+  };
+
+  // Cateva treceri sus→jos si jos→sus pentru a stabiliza ordinea
+  for (let pass = 0; pass < 4; pass++) {
+    if (pass % 2 === 0) for (let i = 1; i < levels.length; i++) orderByBarycenter(levels[i]);
+    else                for (let i = levels.length - 2; i >= 0; i--) orderByBarycenter(levels[i]);
+  }
+
+  // ── Pozitionare finala (centrata pe latimea maxima) ─────────────────────
   let maxW = 0;
-  byRank.forEach(lvl => { const w = lvl.length * (NW + NODE_GAP) - NODE_GAP; if (w > maxW) maxW = w; });
+  levels.forEach(lvl => { const w = lvl.length * (NW + NODE_GAP) - NODE_GAP; if (w > maxW) maxW = w; });
 
   const result = [];
-  sortedRanks.forEach((rank, levelIdx) => {
-    const lvl    = byRank.get(rank);
+  levels.forEach((lvl, levelIdx) => {
     const lvlW   = lvl.length * (NW + NODE_GAP) - NODE_GAP;
     const startX = (maxW - lvlW) / 2 + 80;
     const y      = START_Y + levelIdx * LEVEL_HEIGHT;
-
     lvl.forEach((n, i) => {
       result.push({ ...n, position: { x: startX + i * (NW + NODE_GAP), y } });
     });
@@ -218,51 +248,11 @@ function mkEdge(raw) {
     id:     String(raw.id),
     source: String(raw.source),
     target: String(raw.target),
-    type:   'labeled',
-    // sourcePosition/targetPosition/sourceHandle/targetHandle sunt setate de
-    // applyEdgeRouting() dupa ce nodurile au pozitii calculate
+    type:   'labeled',   // floating edge — isi calculeaza singur punctele pe perimetru
     data:   { sourceLabel: si || null, targetLabel: ti || null },
-    style:  { stroke: '#3DDC84', strokeWidth: 1.6 },
+    style:  { stroke: '#3DDC84', strokeWidth: 1.7 },
     animated: false,
   };
-}
-
-/**
- * Dupa layout, calculeaza directia optima a fiecarui edge in functie de
- * pozitiile relative ale nodurilor sursa si destinatie.
- *
- * - Target predominant sub sursa → bottom → top  (link vertical descendent)
- * - Target predominant deasupra   → top → bottom  (link vertical ascendent)
- * - Target predominant la dreapta → right → left
- * - Target predominant la stanga  → left → right
- */
-function applyEdgeRouting(nodes, edges) {
-  const pos = new Map(nodes.map(n => [n.id, { x: n.position.x + NW / 2, y: n.position.y + NH / 2 }]));
-  return edges.map(e => {
-    const s = pos.get(e.source);
-    const t = pos.get(e.target);
-    if (!s || !t) return e;
-
-    const dx = t.x - s.x;
-    const dy = t.y - s.y;
-
-    // Decidem daca legatura e mai mult verticala sau orizontala
-    // Pragul 0.6 face layout-ul sa prefere vertical (tipic pentru topologii ierarhice)
-    const isVertical = Math.abs(dy) >= Math.abs(dx) * 0.6;
-
-    // sourceHandle = handle de TIP SOURCE pe nodul sursa
-    // targetHandle = handle de TIP TARGET pe nodul destinatie
-    let sp, tp, sh, th;
-    if (isVertical) {
-      if (dy >= 0) { sp = 'bottom'; sh = 's-bottom'; tp = 'top';    th = 't-top';    }
-      else         { sp = 'top';    sh = 's-top';    tp = 'bottom'; th = 't-bottom';  }
-    } else {
-      if (dx >= 0) { sp = 'right';  sh = 's-right';  tp = 'left';   th = 't-left';   }
-      else         { sp = 'left';   sh = 's-left';   tp = 'right';  th = 't-right';  }
-    }
-
-    return { ...e, sourcePosition: sp, targetPosition: tp, sourceHandle: sh, targetHandle: th };
-  });
 }
 
 // ─── App ────────────────────────────────────────────────────────────────────
@@ -315,12 +305,10 @@ export default function App() {
     setNodes(curr => {
       const laid = dagreLayout(curr, edgesRef.current);
       laid.forEach(n => { homePositions.current[n.id] = { ...n.position }; });
-      // Recalculam directia edge-urilor dupa ce stim pozitiile
-      setEdges(es => applyEdgeRouting(laid, es));
       return laid;
     });
     fitView();
-  }, [fitView, setEdges]);
+  }, [fitView]);
 
   // Spring-back: cand userul elibereaza un nod, il animam inapoi la pozitia dagre
   // Retinem frame ID pentru cleanup (evita memory leak daca nodul e sters in timpul animatiei)
@@ -367,10 +355,9 @@ export default function App() {
         const fe = (graph.edges || []).map(mkEdge);
         const laid = dagreLayout(fn, fe);
         laid.forEach(n => { homePositions.current[n.id] = { ...n.position }; });
-        const routedEdges = applyEdgeRouting(laid, fe);
-        edgesRef.current = routedEdges;
+        edgesRef.current = fe;
         setNodes(laid);
-        setEdges(routedEdges);
+        setEdges(fe);
         fitView();
       })
       .catch(e => setTopoErr(e.message || 'Eroare'))
