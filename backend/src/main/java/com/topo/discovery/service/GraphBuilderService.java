@@ -66,10 +66,10 @@ public class GraphBuilderService {
     public static TopologyGraphResponse.GraphNode toNode(Device device) {
         return TopologyGraphResponse.GraphNode.builder()
                 .id(String.valueOf(device.getId()))
-                .label(device.getHostname() != null ? device.getHostname() : device.getManagementIp())
+                .label(device.getHostname() != null ? device.getHostname() : device.getPrimaryIp())
                 .vendor(device.getVendor() != null ? device.getVendor().name() : "UNKNOWN")
                 .status(device.getStatus().name())
-                .managementIp(device.getManagementIp())
+                .managementIp(device.getPrimaryIp())
                 .model(device.getModel())
                 .osVersion(device.getOsVersion())
                 .serialNumber(device.getSerialNumber())

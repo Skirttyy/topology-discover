@@ -97,6 +97,10 @@ public class DiscoveryEngineService {
             // Dupa ce toate device-urile sunt procesate, putem face match hostname -> IP real.
             resolvePlaceholders();
 
+            // Colapsam device-urile duplicate vazute prin mai multe subnet-uri
+            // (acelasi device fizic, IP-uri de management diferite -> acelasi loopback/hostname).
+            dedupeDevicesByIdentity();
+
             finishedAt = LocalDateTime.now().toString();
             // Numaram perechile unice de device-uri (dedup bidirectional, ca in GraphBuilder)
             long totalLinks = linkRepository.findAll().stream()
@@ -107,11 +111,13 @@ public class DiscoveryEngineService {
                     })
                     .distinct()
                     .count();
+            // Numarul real de device-uri din topologie (dupa dedup), nu cate au fost procesate
+            int totalDevices = (int) deviceRepository.count();
             if (stopRequested.get()) {
                 log.info("Discovery oprit manual dupa {} device-uri", devicesProcessed.get());
-                progressNotifier.notifyStopped(devicesProcessed.get(), totalLinks);
+                progressNotifier.notifyStopped(totalDevices, totalLinks);
             } else {
-                progressNotifier.notifyCompleted(devicesProcessed.get(), totalLinks);
+                progressNotifier.notifyCompleted(totalDevices, totalLinks);
             }
         } catch (Exception e) {
             log.error("Discovery BFS esuat: {}", e.getMessage(), e);
@@ -235,7 +241,7 @@ public class DiscoveryEngineService {
                 }
             }
 
-            // hostname din SNMP
+            // hostname din SNMP — functioneaza pe ORICE vendor (OID standard sysName.0)
             String sysName = snmpCollector.getSysName(device.getManagementIp(), snmpCommunity);
             if (sysName != null && !sysName.isBlank()) {
                 device.setHostname(sysName.trim());
@@ -243,6 +249,11 @@ public class DiscoveryEngineService {
                 // daca si sysName e null, SNMP e complet nefunctional pe acest device
                 warnings.add("[SNMP] sysName: indisponibil");
             }
+
+            // SNMP e considerat "viu" daca a raspuns la sysDescr SAU la sysName.
+            // Asa interogam IF-MIB + LLDP si pe device-uri de alt vendor care nu
+            // populeaza sysDescr asteptat dar raspund la restul OID-urilor standard.
+            boolean snmpAlive = sysDescr != null || (sysName != null && !sysName.isBlank());
 
             // Pasul 2: SSH pentru model/version
             if (sshPassword == null) {
@@ -263,7 +274,7 @@ public class DiscoveryEngineService {
             }
 
             // Pasul 3: interfete prin SNMP (sarim daca SNMP nu raspunde deloc)
-            if (sysDescr != null) {
+            if (snmpAlive) {
                 try {
                     pollInterfaces(device, snmpCommunity);
                 } catch (Exception e) {
@@ -285,7 +296,7 @@ public class DiscoveryEngineService {
 
             // Pasul 4: LLDP neighbors (sarim daca SNMP nu raspunde)
             List<SnmpCollector.LldpNeighbor> lldpNeighbors = List.of();
-            if (sysDescr != null) {
+            if (snmpAlive) {
                 try {
                     lldpNeighbors = snmpCollector.walkLldpNeighbors(device.getManagementIp(), snmpCommunity);
                 } catch (Exception e) {
@@ -469,6 +480,33 @@ public class DiscoveryEngineService {
 
             interfaceRepository.save(iface);
         }
+
+        // Detectam loopback-ul (router-id stabil) — preferat ca identitate primara in UI
+        // si folosit la deduplicarea device-urilor vazute prin mai multe subnet-uri.
+        String loopback = detectLoopbackIp(entries);
+        if (loopback != null) device.setLoopbackIp(loopback);
+    }
+
+    /**
+     * Alege IP-ul de loopback dintr-un set de interfete.
+     * Recunoaste lo / lo0 / loN / loopback / loopbackN (orice vendor), exclude 127.x.
+     * Daca sunt mai multe, prefera lo0 / loopback0, altfel primul gasit.
+     */
+    private String detectLoopbackIp(List<SnmpCollector.InterfaceEntry> entries) {
+        String best = null;
+        for (SnmpCollector.InterfaceEntry e : entries) {
+            String name = e.getName();
+            String ip   = e.getIpAddress();
+            if (name == null || ip == null) continue;
+            String n = name.toLowerCase().trim();
+            boolean isLoopback = n.matches("lo\\d*") || n.startsWith("loopback") || n.equals("lo");
+            if (!isLoopback) continue;
+            if (ip.startsWith("127.") || ip.equals("0.0.0.0")) continue;
+            // prioritate pentru lo0 / loopback0
+            if (n.equals("lo0") || n.equals("loopback0")) return ip;
+            if (best == null) best = ip;
+        }
+        return best;
     }
 
     /**
@@ -719,6 +757,137 @@ public class DiscoveryEngineService {
 
         // Dupa mutarea link-urilor pot aparea duplicate pe aceeasi pereche — le colapsam
         dedupeAllLinks();
+    }
+
+    /**
+     * Colapseaza device-urile duplicate care reprezinta acelasi device fizic vazut
+     * prin mai multe subnet-uri de management (ex: routerul raspunde la SSH pe
+     * 192.168.1.1 SI pe 10.0.0.1 -> doua randuri Device pentru acelasi device).
+     *
+     * Identitate stabila, in ordinea increderii:
+     *   1. loopbackIp (router-id, nu depinde de subnet)
+     *   2. serialNumber
+     *   3. hostname (lowercase)
+     *
+     * Pentru fiecare grup de duplicate pastram un "master", ii mutam link-urile si
+     * interfetele, alegem loopback-ul ca identitate, apoi stergem duplicatele.
+     */
+    private void dedupeDevicesByIdentity() {
+        // Excludem placeholder-urile nerezolvate (lldp:*) — ele se trateaza separat
+        List<Device> reals = deviceRepository.findAll().stream()
+                .filter(d -> d.getManagementIp() != null && !d.getManagementIp().startsWith("lldp:"))
+                .filter(d -> d.getId() != null)
+                .toList();
+        if (reals.size() < 2) return;
+
+        // Union-find: doua device-uri se contopesc daca impart ORICE identitate
+        // (loopback / serial / hostname). Astfel acoperim si cazul in care un IP a
+        // detectat loopback-ul iar celalalt nu, dar ambele au acelasi hostname.
+        Map<Long, Long> parent = new HashMap<>();
+        for (Device d : reals) parent.put(d.getId(), d.getId());
+
+        Map<String, Long> firstWithKey = new HashMap<>();
+        for (Device d : reals) {
+            for (String key : identityKeys(d)) {
+                Long other = firstWithKey.putIfAbsent(key, d.getId());
+                if (other != null) union(parent, other, d.getId());
+            }
+        }
+
+        // Grupam pe radacina
+        Map<Long, Device> byId = new HashMap<>();
+        for (Device d : reals) byId.put(d.getId(), d);
+        Map<Long, List<Device>> clusters = new HashMap<>();
+        for (Device d : reals) {
+            clusters.computeIfAbsent(find(parent, d.getId()), x -> new ArrayList<>()).add(d);
+        }
+
+        int merged = 0;
+        for (List<Device> cluster : clusters.values()) {
+            if (cluster.size() < 2) continue;
+            Device master = pickMaster(cluster);
+            for (Device d : cluster) {
+                if (!sameDev(d, master)) { mergeDeviceInto(master, d); merged++; }
+            }
+        }
+
+        if (merged > 0) {
+            log.info("Dedup device-uri: colapsate {} duplicate (multi-subnet)", merged);
+            dedupeAllLinks(); // dupa mutarea link-urilor pot aparea perechi duplicate
+        }
+    }
+
+    /** Toate identitatile stabile ale unui device (poate fi goala daca n-avem nimic sigur). */
+    private Set<String> identityKeys(Device d) {
+        Set<String> keys = new LinkedHashSet<>();
+        if (d.getLoopbackIp()    != null && !d.getLoopbackIp().isBlank())    keys.add("lo:" + d.getLoopbackIp().trim());
+        if (d.getSerialNumber()  != null && !d.getSerialNumber().isBlank())  keys.add("sn:" + d.getSerialNumber().trim());
+        if (d.getHostname()      != null && !d.getHostname().isBlank())      keys.add("hn:" + d.getHostname().trim().toLowerCase());
+        return keys;
+    }
+
+    /** Master-ul unui cluster: preferam device-ul cu loopback (mai complet), apoi cel mai mic id. */
+    private Device pickMaster(List<Device> cluster) {
+        return cluster.stream()
+                .min(Comparator
+                        .comparing((Device d) -> d.getLoopbackIp() == null) // false (are loopback) inainte
+                        .thenComparing(Device::getId))
+                .orElse(cluster.get(0));
+    }
+
+    private Long find(Map<Long, Long> parent, Long x) {
+        Long root = x;
+        while (!root.equals(parent.get(root))) root = parent.get(root);
+        // compresie de cale
+        while (!x.equals(root)) { Long next = parent.get(x); parent.put(x, root); x = next; }
+        return root;
+    }
+
+    private void union(Map<Long, Long> parent, Long a, Long b) {
+        Long ra = find(parent, a), rb = find(parent, b);
+        if (!ra.equals(rb)) parent.put(ra, rb);
+    }
+
+    /** Muta link-urile si interfetele de la dup la master, completeaza campurile lipsa, sterge dup. */
+    private void mergeDeviceInto(Device master, Device dup) {
+        if (sameDev(master, dup)) return;
+        log.info("Merge device {} ({}) -> {} ({})",
+                dup.getManagementIp(), dup.getHostname(),
+                master.getManagementIp(), master.getHostname());
+
+        // mutam link-urile (null-safe pe self-loop)
+        linkRepository.findByLocalDevice(dup).forEach(link -> {
+            if (sameDev(link.getRemoteDevice(), master)) linkRepository.delete(link);
+            else { link.setLocalDevice(master); linkRepository.save(link); }
+        });
+        linkRepository.findByRemoteDevice(dup).forEach(link -> {
+            if (sameDev(link.getLocalDevice(), master)) linkRepository.delete(link);
+            else { link.setRemoteDevice(master); linkRepository.save(link); }
+        });
+
+        // mutam interfetele pe care master nu le are deja (dupa nume)
+        for (NetworkInterface iface : interfaceRepository.findByDevice(dup)) {
+            if (interfaceRepository.findFirstByDeviceAndName(master, iface.getName()).isPresent()) {
+                interfaceRepository.delete(iface);
+            } else {
+                iface.setDevice(master);
+                interfaceRepository.save(iface);
+            }
+        }
+
+        // completam campurile lipsa pe master din dup
+        if (master.getLoopbackIp()    == null && dup.getLoopbackIp()    != null) master.setLoopbackIp(dup.getLoopbackIp());
+        if (master.getHostname()      == null && dup.getHostname()      != null) master.setHostname(dup.getHostname());
+        if (master.getModel()         == null && dup.getModel()         != null) master.setModel(dup.getModel());
+        if (master.getOsVersion()     == null && dup.getOsVersion()     != null) master.setOsVersion(dup.getOsVersion());
+        if (master.getSerialNumber()  == null && dup.getSerialNumber()  != null) master.setSerialNumber(dup.getSerialNumber());
+        if (master.getVendor() == null || master.getVendor() == Vendor.UNKNOWN) {
+            if (dup.getVendor() != null && dup.getVendor() != Vendor.UNKNOWN) master.setVendor(dup.getVendor());
+        }
+        deviceRepository.save(master);
+
+        deviceRepository.delete(dup);
+        progressNotifier.notifyNodeUpdated(GraphBuilderService.toNode(master));
     }
 
     /**

@@ -30,8 +30,13 @@ public class Device {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    // IP-ul prin care chiar ne conectam (SSH/SNMP) — gasit de subnet scan.
     @Column(nullable = false, unique = true)
     private String managementIp;
+
+    // IP-ul de loopback al device-ului (router-id stabil), detectat din interfete.
+    // Preferat ca identitate "primara" in UI fiindca nu depinde de subnet-ul de management.
+    private String loopbackIp;
 
     private String hostname;
 
@@ -77,5 +82,11 @@ public class Device {
     protected void onCreate() {
         if (firstDiscoveredAt == null) firstDiscoveredAt = LocalDateTime.now();
         if (status == null) status = DeviceStatus.DISCOVERED;
+    }
+
+    /** IP-ul primar de afisat: preferam loopback-ul (router-id stabil), altfel IP-ul de management. */
+    @Transient
+    public String getPrimaryIp() {
+        return (loopbackIp != null && !loopbackIp.isBlank()) ? loopbackIp : managementIp;
     }
 }
