@@ -7,6 +7,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.concurrent.*;
 
@@ -39,13 +41,37 @@ public class SubnetScannerService {
      * @return lista de adrese IP la care s-a gasit portul SSH deschis
      */
     public List<String> scanForLiveHosts(String cidr) {
-        List<String> allIps = expandCidr(cidr);
-        log.info("Scanez {} adrese IP din subnet-ul {} pentru SSH deschis...", allIps.size(), cidr);
+        return scanForLiveHosts(List.of(cidr));
+    }
+
+    /**
+     * Scaneaza mai multe subnet-uri deodata. Toate IP-urile (din toate subnet-urile,
+     * fara duplicate daca se suprapun) sunt scanate intr-un singur pool paralel,
+     * ca sa nu reluam costul de creare a pool-ului per subnet.
+     *
+     * @param cidrs lista de subnet-uri in format CIDR
+     * @return lista de adrese IP la care s-a gasit portul SSH deschis
+     */
+    public List<String> scanForLiveHosts(List<String> cidrs) {
+        // Expandam toate subnet-urile intr-o multime unica de IP-uri (dedup pe suprapuneri)
+        LinkedHashSet<String> allIps = new LinkedHashSet<>();
+        for (String cidr : cidrs) {
+            allIps.addAll(expandCidr(cidr));
+        }
+        log.info("Scanez {} adrese IP din {} subnet-uri ({}) pentru SSH deschis...",
+                allIps.size(), cidrs.size(), cidrs);
 
         ExecutorService executor = Executors.newFixedThreadPool(parallelThreads);
-        List<Future<String>> futures = new ArrayList<>();
+        try {
+            return scanIps(executor, allIps);
+        } finally {
+            executor.shutdown();
+        }
+    }
 
-        for (String ip : allIps) {
+    private List<String> scanIps(ExecutorService executor, Collection<String> ips) {
+        List<Future<String>> futures = new ArrayList<>();
+        for (String ip : ips) {
             futures.add(executor.submit(() -> {
                 boolean reachable = sshExecutor.isSshReachable(ip, portToCheck, portTimeoutMs);
                 return reachable ? ip : null;
@@ -64,8 +90,7 @@ public class SubnetScannerService {
             }
         }
 
-        executor.shutdown();
-        log.info("Gasite {} device-uri vii in subnet-ul {}", liveHosts.size(), cidr);
+        log.info("Gasite {} device-uri vii", liveHosts.size());
         return liveHosts;
     }
 

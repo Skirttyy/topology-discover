@@ -227,7 +227,7 @@ export default function App() {
   const [scanErr,    setScanErr]    = useState(null);
   const [confirmReset, setConfirmReset] = useState(false);
   const [form, setForm] = useState({
-    subnet: '192.168.1.0/24',
+    subnets: '192.168.1.0/24',  // unul sau mai multe CIDR-uri, un subnet pe linie (sau separate prin virgula)
     sshUsername: '', sshPassword: '', snmpCommunity: '',
   });
 
@@ -424,9 +424,21 @@ export default function App() {
     e.preventDefault();
     setScanning(true); setScanErr(null); setScanRes(null);
     try {
+      // Acceptam mai multe subnet-uri: un CIDR pe linie sau separate prin virgula
+      const subnetList = form.subnets
+        .split(/[\n,]+/)
+        .map(s => s.trim())
+        .filter(Boolean);
+      if (subnetList.length === 0) {
+        setScanErr('Introdu cel putin un subnet (CIDR)');
+        setScanning(false);
+        return;
+      }
       const res = await scanSubnet({
-        ...form,
+        subnets: subnetList,
         vendor: 'UNKNOWN',
+        sshUsername: form.sshUsername,
+        sshPassword: form.sshPassword,
         snmpCommunity: form.snmpCommunity || undefined,
         autoStartDiscovery: true,
       });
@@ -547,9 +559,16 @@ export default function App() {
           {formOpen && (
             <form onSubmit={handleScan} style={{ padding: '14px 14px 0', borderBottom: '1px solid #252A35' }}>
               <div style={{ marginBottom: 10 }}>
-                <label style={lbl}>Subnet (CIDR)</label>
-                <input style={input} value={form.subnet}
-                  onChange={e => setForm(f => ({ ...f, subnet: e.target.value }))} required />
+                <label style={lbl}>Subnet-uri (CIDR) — unul pe linie</label>
+                <textarea
+                  style={{ ...input, resize: 'vertical', minHeight: 58, lineHeight: 1.5 }}
+                  value={form.subnets}
+                  rows={3}
+                  placeholder={'192.168.1.0/24\n10.0.0.0/24'}
+                  onChange={e => setForm(f => ({ ...f, subnets: e.target.value }))} required />
+                <div style={{ fontSize: 9, color: '#5A6275', marginTop: 3 }}>
+                  Mai multe subnet-uri: cate unul pe linie (sau separate prin virgula)
+                </div>
               </div>
 
 <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
@@ -586,7 +605,8 @@ export default function App() {
               )}
               {scanRes && (
                 <div style={{ fontSize: 11, color: '#3DDC84', marginBottom: 10 }}>
-                  {scanRes.liveHostsFound} device-uri gasite.
+                  {scanRes.liveHostsFound} device-uri gasite
+                  {Array.isArray(scanRes.subnetsScanned) ? ` in ${scanRes.subnetsScanned.length} subnet-uri` : ''}.
                   {scanRes.discoveryStarted ? ' Discovery pornit.' : ''}
                 </div>
               )}

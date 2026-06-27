@@ -36,7 +36,8 @@ public class DiscoveryController {
      */
     @PostMapping("/scan-subnet")
     public ResponseEntity<Map<String, Object>> scanSubnet(@Valid @RequestBody ScanSubnetRequest request) {
-        List<String> liveHosts = subnetScannerService.scanForLiveHosts(request.getSubnet());
+        List<String> subnets = request.getAllSubnets();
+        List<String> liveHosts = subnetScannerService.scanForLiveHosts(subnets);
 
         List<Long> seedIds = liveHosts.stream()
                 .map(ip -> deviceService.createSeedDeviceIfAbsent(
@@ -50,6 +51,7 @@ public class DiscoveryController {
         }
 
         return ResponseEntity.ok(Map.of(
+                "subnetsScanned", subnets,
                 "liveHostsFound", liveHosts.size(),
                 "liveHosts", liveHosts,
                 "seedDeviceIds", seedIds,
