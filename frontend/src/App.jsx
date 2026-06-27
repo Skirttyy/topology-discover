@@ -605,9 +605,9 @@ export default function App() {
               )}
               {scanRes && (
                 <div style={{ fontSize: 11, color: '#3DDC84', marginBottom: 10 }}>
-                  {scanRes.liveHostsFound} device-uri gasite
+                  {scanRes.liveHostsFound} IP-uri vii gasite
                   {Array.isArray(scanRes.subnetsScanned) ? ` in ${scanRes.subnetsScanned.length} subnet-uri` : ''}.
-                  {scanRes.discoveryStarted ? ' Discovery pornit.' : ''}
+                  {scanRes.discoveryStarted ? ' Discovery pornit — numarul real de device-uri apare la final.' : ''}
                 </div>
               )}
             </form>
