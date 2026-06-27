@@ -59,8 +59,9 @@ public class SnmpCollector {
     }
 
     // --- System MIB ---
-    private static final String OID_SYS_DESCR = "1.3.6.1.2.1.1.1.0";
-    private static final String OID_SYS_NAME  = "1.3.6.1.2.1.1.5.0";
+    private static final String OID_SYS_DESCR     = "1.3.6.1.2.1.1.1.0";
+    private static final String OID_SYS_OBJECT_ID = "1.3.6.1.2.1.1.2.0"; // enterprise OID — vendor fiabil
+    private static final String OID_SYS_NAME      = "1.3.6.1.2.1.1.5.0";
 
     // --- LLDP-MIB ---
     // Tabela REMOTE (vecinii vazuti de device): 1.0.8802.1.1.2.1.4.1.1.<col>
@@ -114,6 +115,16 @@ public class SnmpCollector {
         }
     }
 
+    /** sysObjectID — OID enterprise pentru detectie vendor fiabila (independent de sysDescr). */
+    public String getSysObjectId(String host, String community) {
+        try {
+            return getScalar(host, community, OID_SYS_OBJECT_ID);
+        } catch (Exception e) {
+            log.debug("sysObjectID esuat pentru {}: {}", host, e.getMessage());
+            return null;
+        }
+    }
+
     /**
      * LLDP neighbors walk - sursa principala pentru link-urile topologiei.
      * Returneaza lista de vecini cu portul local si remote.
@@ -129,6 +140,7 @@ public class SnmpCollector {
             CompletableFuture<List<SnmpEntry>> remPortSubF   = walkAsync(host, community, OID_LLDP_REM_PORT_SUBTYPE);
             CompletableFuture<List<SnmpEntry>> remPortDescrF = walkAsync(host, community, OID_LLDP_REM_PORT_DESCR);
             CompletableFuture<List<SnmpEntry>> chassisF      = walkAsync(host, community, OID_LLDP_REM_CHASSIS_ID);
+            CompletableFuture<List<SnmpEntry>> manAddrF      = walkAsync(host, community, OID_LLDP_REM_MAN_ADDR);
             // Tabela LOCALA (porturile proprii) + subtype + descriere
             CompletableFuture<List<SnmpEntry>> locPortIdF    = walkAsync(host, community, OID_LLDP_LOC_PORT_ID);
             CompletableFuture<List<SnmpEntry>> locPortSubF   = walkAsync(host, community, OID_LLDP_LOC_PORT_SUBTYPE);
@@ -139,9 +151,24 @@ public class SnmpCollector {
             List<SnmpEntry> remPortSubs   = safeGet(remPortSubF,   timeoutSec);
             List<SnmpEntry> remPortDescrs = safeGet(remPortDescrF, timeoutSec);
             List<SnmpEntry> chassisIds    = safeGet(chassisF,      timeoutSec);
+            List<SnmpEntry> manAddrs      = safeGet(manAddrF,      timeoutSec);
             List<SnmpEntry> locPortIds    = safeGet(locPortIdF,    timeoutSec);
             List<SnmpEntry> locPortSubs   = safeGet(locPortSubF,   timeoutSec);
             List<SnmpEntry> locPortDescrs = safeGet(locPortDescrF, timeoutSec);
+
+            // IP-ul de management advertizat de fiecare vecin (lldpRemManAddr).
+            // Index OID: <timeMark>.<localPort>.<remIndex>.<addrSubtype>.<addrLen>.<octeti adresa>
+            // addrSubtype=1 + addrLen=4 => IPv4. Cheia (tm.localPort.remIndex) = aceeasi ca tabela REM.
+            Map<String, String> manAddrByKey = new HashMap<>();
+            for (SnmpEntry e : manAddrs) {
+                String sfx = stripPrefix(e.oid(), OID_LLDP_REM_MAN_ADDR);
+                String[] p = sfx.split("\\.");
+                if (p.length >= 9 && "1".equals(p[3]) && "4".equals(p[4])) {
+                    String key = p[0] + "." + p[1] + "." + p[2];
+                    String ip  = p[5] + "." + p[6] + "." + p[7] + "." + p[8];
+                    manAddrByKey.putIfAbsent(key, ip);
+                }
+            }
 
             // indexul tabelei REM: <timeMark>.<localPortNum>.<remoteIndex>
             for (SnmpEntry sysNameEntry : sysNames) {
@@ -169,6 +196,7 @@ public class SnmpCollector {
                             .remoteSystemName(remoteName.trim())
                             .remotePortId(remotePort)            // clean sau null
                             .remoteChassisId(formatMac(chassisId))
+                            .remoteManagementIp(manAddrByKey.get(suffix)) // IP-ul de mgmt al vecinului, sau null
                             .localPortId(localPort)              // clean sau null (autoritar)
                             .build());
                 }
@@ -547,6 +575,7 @@ public class SnmpCollector {
         private String remoteSystemName;
         private String remotePortId;
         private String remoteChassisId;
+        private String remoteManagementIp; // din lldpRemManAddr — util pt corelarea cu device-uri reale
         private String localPortId;
     }
 

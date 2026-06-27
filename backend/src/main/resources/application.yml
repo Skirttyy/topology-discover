@@ -24,20 +24,23 @@ jasypt:
 # Configurari proprii ale aplicatiei de discovery
 discovery:
   ssh:
-    connect-timeout-ms: 4000   # era 8000 — lab local, 4s e suficient
-    command-timeout-ms: 8000   # era 15000 — comenzile simple nu dureaza mai mult
+    connect-timeout-ms: 8000   # lab EVE-NG cu vMX/vQFX e lent la handshake-ul SSH
+    command-timeout-ms: 12000  # 'show version' pe Junos virtualizat poate dura
   snmp:
     community: public
-    timeout-ms: 1500           # era 3000 — local LAN, 1.5s e suficient
-    retries: 0                 # era 1 — 0 retry = 2x mai rapid la fail (nu retry pe device mort)
+    timeout-ms: 2000           # lab virtualizat lent — 2s reduce timeout-urile false
+    retries: 1                 # 1 retry recupereaza pierderile ocazionale de pachete UDP
   subnet-scan:
-    parallel-threads: 50       # era 20 — mai rapid pentru /24 (254 IP-uri)
+    parallel-threads: 50       # doar TCP connect — ramane rapid
     port-check: 22
-    port-timeout-ms: 500       # era 1000 — lab local, 500ms ajunge
+    port-timeout-ms: 800       # putin mai generos ca sa prindem host-uri lente
   bfs:
     max-depth: 10
     max-devices: 200
-    parallel-threads: 10       # era 5 — mai multe device-uri in paralel
+    # IMPORTANT: paralelism redus. 10 thread-uri x 8 walk-uri SNMP = ~80 sesiuni UDP
+    # simultane care satureaza lab-ul virtual si cauzeaza timeout-uri aleatorii.
+    # 4 thread-uri = ~32 sesiuni = polling mult mai fiabil (rateaza mai rar SNMP/SSH/LLDP).
+    parallel-threads: 4
 
 springdoc:
   swagger-ui:

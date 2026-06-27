@@ -241,6 +241,18 @@ public class DiscoveryEngineService {
                 }
             }
 
+            // Pasul 1b: vendor prin sysObjectID (OID enterprise) — semnal robust, independent
+            // de textul sysDescr. Functioneaza chiar daca sysDescr a dat timeout sau e gol.
+            String sysObjectId = snmpCollector.getSysObjectId(device.getManagementIp(), snmpCommunity);
+            if ((device.getVendor() == Vendor.UNKNOWN || device.getVendor() == null) && sysObjectId != null) {
+                Vendor byOid = Vendor.detectFromSysObjectId(sysObjectId);
+                if (byOid != Vendor.UNKNOWN) {
+                    device.setVendor(byOid);
+                    log.info("Vendor detectat pentru {} din sysObjectID ({}): {}",
+                            device.getManagementIp(), sysObjectId, byOid);
+                }
+            }
+
             // hostname din SNMP — functioneaza pe ORICE vendor (OID standard sysName.0)
             String sysName = snmpCollector.getSysName(device.getManagementIp(), snmpCommunity);
             if (sysName != null && !sysName.isBlank()) {
@@ -250,10 +262,11 @@ public class DiscoveryEngineService {
                 warnings.add("[SNMP] sysName: indisponibil");
             }
 
-            // SNMP e considerat "viu" daca a raspuns la sysDescr SAU la sysName.
+            // SNMP e considerat "viu" daca a raspuns la sysDescr, sysObjectID SAU sysName.
             // Asa interogam IF-MIB + LLDP si pe device-uri de alt vendor care nu
             // populeaza sysDescr asteptat dar raspund la restul OID-urilor standard.
-            boolean snmpAlive = sysDescr != null || (sysName != null && !sysName.isBlank());
+            boolean snmpAlive = sysDescr != null || sysObjectId != null
+                    || (sysName != null && !sysName.isBlank());
 
             // Pasul 2: SSH pentru model/version
             if (sshPassword == null) {
@@ -309,6 +322,8 @@ public class DiscoveryEngineService {
 
             for (SnmpCollector.LldpNeighbor neighbor : lldpNeighbors) {
                 Device neighborDevice = resolveOrCreateNeighbor(neighbor, device, sshPassword, snmpCommunity);
+                // guard: un device care se "vede" pe sine in LLDP nu trebuie sa creeze self-link
+                if (sameDev(neighborDevice, device)) continue;
                 createLink(device, neighbor, neighborDevice);
                 if (neighborDevice != null
                         && neighborDevice.getStatus() == DeviceStatus.DISCOVERED
@@ -524,30 +539,52 @@ public class DiscoveryEngineService {
                                             String snmpCommunity) {
         if (neighbor.getRemoteSystemName() == null) return null;
         String remoteName = neighbor.getRemoteSystemName().trim();
+        String mgmtIp = neighbor.getRemoteManagementIp(); // poate fi null
 
-        // 1. cauta dupa hostname exact sau management IP
+        // 1. cauta dupa hostname exact sau management IP (din numele de sistem)
         Optional<Device> byHostname = deviceRepository.findFirstByHostnameIgnoreCase(remoteName);
         if (byHostname.isEmpty()) {
             byHostname = deviceRepository.findByManagementIp(remoteName);
         }
-        if (byHostname.isPresent()) return byHostname.get();
+        if (byHostname.isPresent()) {
+            enrichFromLldp(byHostname.get(), remoteName, mgmtIp);
+            return byHostname.get();
+        }
 
-        // 2. cauta dupa chassis MAC in interfete
+        // 2. cauta dupa IP-ul de management advertizat prin LLDP (lldpRemManAddr).
+        //    Asa recuperam identitatea device-urilor care au esuat polling-ul (orfani UNKNOWN):
+        //    le completam hostname-ul din LLDP -> devin deduplicabile.
+        if (mgmtIp != null) {
+            Optional<Device> byIp = deviceRepository.findByManagementIp(mgmtIp);
+            if (byIp.isPresent()) {
+                enrichFromLldp(byIp.get(), remoteName, mgmtIp);
+                return byIp.get();
+            }
+        }
+
+        // 3. cauta dupa chassis MAC in interfete
         if (neighbor.getRemoteChassisId() != null) {
             Optional<NetworkInterface> byMac =
                     interfaceRepository.findFirstByMacAddress(neighbor.getRemoteChassisId());
-            if (byMac.isPresent()) return byMac.get().getDevice();
+            if (byMac.isPresent()) {
+                enrichFromLldp(byMac.get().getDevice(), remoteName, mgmtIp);
+                return byMac.get().getDevice();
+            }
         }
 
-        // 3. device nou - IP necunoscut, hostname din LLDP
-        // Il cream ca placeholder cu IP "lldp:<hostname>" pana cand scan-ul il rezolva
-        String placeholderIp = "lldp:" + remoteName;
-        Optional<Device> existing = deviceRepository.findByManagementIp(placeholderIp);
-        if (existing.isPresent()) return existing.get();
+        // 4. device nou descoperit prin LLDP.
+        //    Daca avem IP-ul lui de management (din LLDP) -> il cream cu IP-ul real, ca
+        //    BFS-ul sa-l interogheze (status DISCOVERED). Altfel ramane placeholder "lldp:<hostname>".
+        String newIp = (mgmtIp != null) ? mgmtIp : "lldp:" + remoteName;
+        Optional<Device> existing = deviceRepository.findByManagementIp(newIp);
+        if (existing.isPresent()) {
+            enrichFromLldp(existing.get(), remoteName, mgmtIp);
+            return existing.get();
+        }
 
-        log.info("Vecin LLDP nou necunoscut: {} - cream placeholder", remoteName);
-        Device placeholder = Device.builder()
-                .managementIp(placeholderIp)
+        log.info("Vecin LLDP nou: {} (mgmtIp={}) - cream device", remoteName, mgmtIp);
+        Device created = Device.builder()
+                .managementIp(newIp)
                 .hostname(remoteName)
                 .vendor(Vendor.UNKNOWN)
                 .status(DeviceStatus.DISCOVERED)
@@ -556,11 +593,37 @@ public class DiscoveryEngineService {
                 .sshPasswordEncrypted(sourceDevice.getSshPasswordEncrypted())
                 .snmpCommunityEncrypted(sourceDevice.getSnmpCommunityEncrypted())
                 .build();
-        placeholder = deviceRepository.save(placeholder);
+        try {
+            created = deviceRepository.save(created);
+        } catch (org.springframework.dao.DataIntegrityViolationException e) {
+            // Race in BFS paralel: alt thread a creat acelasi IP intre check si save.
+            // Refolosim device-ul deja existent in loc sa esuam.
+            return deviceRepository.findByManagementIp(newIp).orElseThrow(() -> e);
+        }
 
         // notifica frontend-ul imediat de nodul nou
-        progressNotifier.notifyNodeDiscovered(GraphBuilderService.toNode(placeholder));
-        return placeholder;
+        progressNotifier.notifyNodeDiscovered(GraphBuilderService.toNode(created));
+        return created;
+    }
+
+    /**
+     * Completeaza un device existent cu informatii din LLDP (cand a fost gasit ca vecin).
+     * In principal recupereaza hostname-ul orfanilor care au esuat polling-ul SNMP/SSH,
+     * facandu-i deduplicabili. Nu suprascrie date deja existente.
+     */
+    private void enrichFromLldp(Device d, String remoteName, String mgmtIp) {
+        if (d == null) return;
+        boolean changed = false;
+        if ((d.getHostname() == null || d.getHostname().isBlank())
+                && remoteName != null && !remoteName.isBlank()
+                && !remoteName.equalsIgnoreCase(d.getManagementIp())) {
+            d.setHostname(remoteName.trim());
+            changed = true;
+        }
+        if (changed) {
+            deviceRepository.save(d);
+            progressNotifier.notifyNodeUpdated(GraphBuilderService.toNode(d));
+        }
     }
 
     /**

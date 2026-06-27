@@ -24,4 +24,20 @@ public enum Vendor {
 
         return UNKNOWN;
     }
+
+    /**
+     * Detecteaza vendorul din sysObjectID (OID enterprise, 1.3.6.1.2.1.1.2.0).
+     * E semnalul cel mai fiabil si universal — nu depinde de parsarea textului
+     * din sysDescr, care poate fi gol sau formatat diferit intre versiuni.
+     *
+     * IANA enterprise numbers: Juniper=2636, MikroTik=14988, Arista=30065.
+     */
+    public static Vendor detectFromSysObjectId(String oid) {
+        if (oid == null) return UNKNOWN;
+        String o = oid.trim();
+        if (o.startsWith("1.3.6.1.4.1.2636"))  return JUNIPER;
+        if (o.startsWith("1.3.6.1.4.1.14988")) return MIKROTIK;
+        if (o.startsWith("1.3.6.1.4.1.30065")) return ARISTA;
+        return UNKNOWN;
+    }
 }
